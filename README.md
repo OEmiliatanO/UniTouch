@@ -12,13 +12,50 @@ Our code is built on top of the [ImageBind](https://github.com/facebookresearch/
 
 # Inference with Pretrained Models
 
+## Option 1: Touch Encoder Only (Lightweight)
+
+If you only need the touch encoder to extract tactile embeddings (without the language model):
+
+1. Download the pretrained touch encoder (`last_new.ckpt`) from the [HuggingFace model hub](https://huggingface.co/chfeng/Touch-LLM) and put it in the `./UniTouch` folder, same level as `touch_qa.py`.
+
+2. Run the standalone touch encoder:
+
+```bash
+python load_touch_encoder.py
+```
+
+This will load only the touch encoder and extract 1024-dimensional embeddings from touch images. You can use these embeddings for:
+- Touch-based similarity search
+- Touch classification
+- Touch feature extraction
+- Cross-modal retrieval (touch-to-vision, touch-to-text, etc.)
+
+Example usage:
+```python
+import torch
+import ImageBind.data as data
+from ImageBind.models.x2touch_model_part import x2touch, ModalityType
+
+# Load touch encoder
+model = x2touch(pretrained=True)
+model.eval()
+
+# Extract embeddings from touch images
+touch_images = data.load_and_transform_vision_data(["path/to/touch.jpg"], device="cuda")
+with torch.no_grad():
+    embeddings = model({ModalityType.TOUCH: touch_images})[ModalityType.TOUCH]  # Shape: [1, 1024]
+```
+
+## Option 2: Full Touch-LLM (with Language Model)
+
+If you need the full Touch-LLM for tactile question answering:
+
 1. Download the pretrained touch encoder (`last_new.ckpt`) from the [HuggingFace model hub](https://huggingface.co/chfeng/Touch-LLM) and put it in the `./UniTouch` folder, same level as `touch_qa.py`.
 2. Download the folder `ckpts` from the [HuggingFace model hub](https://huggingface.co/chfeng/Touch-LLM) and put it in the `./UniTouch` folder, same level as `touch_qa.py`.
 3. Download the folder `llama_ori` from the [HuggingFace model hub](https://huggingface.co/chfeng/Touch-LLM) and put it in the `./UniTouch` folder, same level as `touch_qa.py`.
 
+4. Run Touch-LLM for tactile question answering:
 
-
-For Touch-LLM:
 ```bash
 CUDA_VISIBLE_DEVICES=0 python touch_qa.py
 ```
