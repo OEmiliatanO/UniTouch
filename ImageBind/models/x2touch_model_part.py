@@ -439,8 +439,8 @@ class ImageBindModel(nn.Module):
                 touch_embed_dim,
                 touch_num_blocks,
                 touch_num_heads,
-                pre_transformer_ln=False,
-                add_bias_kv=True,
+                pre_transformer_ln=True,
+                add_bias_kv=False,
                 drop_path=0.0,
             )
         return nn.ModuleDict(modality_trunks)
@@ -602,8 +602,8 @@ def imagebind_huge(pretrained=False):
         out_embed_dim=1024,
         audio_drop_path=0.1,
         imu_drop_path=0.7,
-        modality_list=['vision', 'touch']
-        # modality_list=['vision', 'text', 'audio', 'thermal', 'depth', 'imu', 'touch']
+        # modality_list=['vision', 'touch']
+        modality_list=['vision', 'text', 'audio', 'thermal', 'depth', 'imu', 'touch']
         
     )
 
@@ -637,6 +637,9 @@ def x2touch(pretrained=False):
         text_embed_dim=1024,
         text_num_blocks=24,
         text_num_heads=16,
+        touch_embed_dim=1280, # follow the vision embed dim
+        touch_num_blocks=32, # follow the vision num blocks
+        touch_num_heads=16, # follow the vision num heads
         out_embed_dim=1024,
         audio_drop_path=0.1,
         imu_drop_path=0.7,
