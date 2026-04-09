@@ -1,0 +1,38 @@
+import torch
+from PIL import Image
+import pandas as pd
+
+class YCBSlideDataset(torch.utils.data.Dataset):
+    def __init__(self, csv_file, transform=None):
+        self.data = pd.read_csv(csv_file)
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        path = self.data.iloc[idx]['path']
+        label = self.data.iloc[idx]['label']
+        with open(path, "rb") as fopen:
+            image = Image.open(fopen).convert("RGB")
+        if self.transform:
+            image = self.transform(image)
+        return image, label
+
+"""
+data_transform = transforms.Compose(
+    [
+        transforms.Resize(
+            224, interpolation=transforms.InterpolationMode.BICUBIC
+        ),
+        transforms.CenterCrop(224),
+        transforms.ToTensor(),
+        transforms.Normalize(
+            mean=(0.48145466, 0.4578275, 0.40821073),
+            std=(0.26862954, 0.26130258, 0.27577711),
+        ),
+    ]
+)
+
+dataloader = torch.utils.data.DataLoader(YCBSlideDataset("YCB-Slide_touch_training_data.csv", transform=data_transform), batch_size=64, shuffle=True, num_workers=4, pin_memory=True)
+"""
