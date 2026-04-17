@@ -131,14 +131,14 @@ def evaluate(model, dataloader, text_features, device):
     acc = (preds == torch.tensor(all_labels)).float().mean().item()
     return acc
 
-def align(vision_features_list, touch_model, paired_dataloader, device, epochs=5, local_rank=0): # infoNCE
+def align(touch_model, paired_dataloader, device, epochs=5, local_rank=0): # infoNCE
     touch_model.train()
     optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, touch_model.parameters()), lr=1e-5)
 
     # scaler = GradScaler()
 
     is_main_process = (local_rank == 0)
-    progress_bar = tqdm(total=epochs, desc="Aligning Models (InfoNCE Training)")
+    progress_bar = tqdm(total=epochs, desc="Aligning Models (InfoNCE Training)", disable=not is_main_process)
 
     for epoch in range(epochs):
         if hasattr(paired_dataloader.sampler, "set_epoch"):
@@ -148,7 +148,7 @@ def align(vision_features_list, touch_model, paired_dataloader, device, epochs=5
         for batch in paired_dataloader:
             (touch_images, vision_features), _ = batch
             touch_images = touch_images.to(device)
-            vision_images = vision_images.to(device)
+            vision_features = vision_features.to(device)
 
             optimizer.zero_grad()
             batch_touch_features = touch_model({ModalityType.TOUCH: touch_images})[ModalityType.TOUCH]
@@ -156,10 +156,17 @@ def align(vision_features_list, touch_model, paired_dataloader, device, epochs=5
             temperature = 0.07
             
             local_touch_features = F.normalize(batch_touch_features, dim=1)
-            global_touch_features = gather_features(local_touch_features)
+            local_vision_features = F.normalize(vision_features, dim=1)
+            global_touch_list = diff_all_gather(local_touch_features)
+            global_touch_features = torch.cat(global_touch_list, dim=0)
 
-            logits_T2V = local_touch_features @ vision_features.T / temperature 
-            logits_V2T = vision_features @ global_touch_features.T / temperature
+            with torch.no_grad():
+                global_vision_list = [torch.zeros_like(local_vision_features) for _ in range(dist.get_world_size())]
+                dist.all_gather(global_vision_list, local_vision_features)
+                global_vision_features = torch.cat(global_vision_list, dim=0)
+
+            logits_T2V = local_touch_features @ global_vision_features.T / temperature 
+            logits_V2T = local_vision_features @ global_touch_features.T / temperature
 
             batch_size = local_touch_features.size(0)
             rank_offset = dist.get_rank() * batch_size
@@ -260,7 +267,7 @@ if __name__ == "__main__":
         
         # Step C: Post-alignment Training (InfoNCE)
         print("--- Running Post-alignment Training ---")
-        model = align(vision_features_list, model, touch_vision_paired_training_dataloader, device, epochs=5, local_rank=local_rank)
+        model = align(model, touch_vision_paired_training_dataloader, device, epochs=5, local_rank=local_rank)
         
         # Step D: 評估 Final Performance
         if local_rank == 0:
