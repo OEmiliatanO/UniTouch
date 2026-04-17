@@ -14,6 +14,7 @@ from torch.amp import autocast, GradScaler
 from torch.amp import custom_fwd, custom_bwd
 
 import torch.distributed as dist
+from torch.distributed.nn.functional import all_gather as diff_all_gather
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
 
