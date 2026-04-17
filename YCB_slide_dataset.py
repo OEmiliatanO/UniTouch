@@ -43,6 +43,26 @@ class YCBSlidePairedDataset(torch.utils.data.Dataset):
             vision_image = self.transform(vision_image)
         return (touch_image, vision_image), label
 
+class YCBSlidedPairedDataset_precomputed_vision(torch.utils.data.Dataset):
+    def __init__(self, touch_csv_file, precomputed_vision_features, transform=None):
+        self.touch_data = pd.read_csv(touch_csv_file)
+        self.vision_data = torch.load(precomputed_vision_features, map_location=torch.device("cpu"))
+        self.transform = transform
+
+        assert len(self.touch_data) == len(self.vision_data), "Touch and vision datasets must have the same number of samples"
+    
+    def __len__(self):
+        return len(self.touch_data)
+    
+    def __getitem__(self, idx):
+        touch_path = self.touch_data.iloc[idx]['path']
+        label = self.touch_data.iloc[idx]['label']
+        with open(touch_path, "rb") as fopen:
+            touch_image = Image.open(fopen).convert("RGB")
+        if self.transform:
+            touch_image = self.transform(touch_image)
+        return (touch_image, self.vision_data[idx]), label
+
 """
 data_transform = transforms.Compose(
     [

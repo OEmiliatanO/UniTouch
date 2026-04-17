@@ -1,5 +1,5 @@
 import glob
-from YCB_slide_dataset import YCBSlidePairedDataset, YCBSlideDataset
+from YCB_slide_dataset import YCBSlidePairedDataset, YCBSlidedPairedDataset_precomputed_vision, YCBSlideDataset
 import torch
 import torch.nn.functional as F
 import numpy as np
@@ -67,10 +67,10 @@ def initialize_touch_model(imagebind_model, touch_model, init_strategy="random",
     new_touch_model = touch_model
     new_touch_model.requires_grad_(False)
     vision_components = [
-        imagebind_model.modality_preprocessors["vision"],
-        imagebind_model.modality_trunks["vision"],
-        imagebind_model.modality_heads["vision"],
-        imagebind_model.modality_postprocessors["vision"]
+        imagebind_model.modality_preprocessors[ModalityType.VISION],
+        imagebind_model.modality_trunks[ModalityType.VISION],
+        imagebind_model.modality_heads[ModalityType.VISION],
+        imagebind_model.modality_postprocessors[ModalityType.VISION]
     ]
     touch_components = [
         new_touch_model.modality_preprocessors[ModalityType.TOUCH],
@@ -146,7 +146,7 @@ def align(vision_features_list, touch_model, paired_dataloader, device, epochs=5
         tot_loss = 0
         i = 0
         for batch in paired_dataloader:
-            (touch_images, vision_images), _ = batch
+            (touch_images, vision_features), _ = batch
             touch_images = touch_images.to(device)
             vision_images = vision_images.to(device)
 
@@ -158,8 +158,8 @@ def align(vision_features_list, touch_model, paired_dataloader, device, epochs=5
             local_touch_features = F.normalize(batch_touch_features, dim=1)
             global_touch_features = gather_features(local_touch_features)
 
-            logits_T2V = local_touch_features @ vision_features_list[i].T / temperature 
-            logits_V2T = vision_features_list[i] @ global_touch_features.T / temperature
+            logits_T2V = local_touch_features @ vision_features.T / temperature 
+            logits_V2T = vision_features @ global_touch_features.T / temperature
 
             batch_size = local_touch_features.size(0)
             rank_offset = dist.get_rank() * batch_size
@@ -206,7 +206,8 @@ if __name__ == "__main__":
 
     text_features = torch.load("YCB-Slide_dataset_path/YCB-Slide_text_features.pt").to(device) # Shape: [C, 1024]
 
-    touch_vision_paired_training_dataset = YCBSlidePairedDataset("YCB-Slide_dataset_path/YCB-Slide_touch_training_data.csv", "YCB-Slide_dataset_path/YCB-Slide_vision_training_data.csv", transform=data_transform)
+    # touch_vision_paired_training_dataset = YCBSlidePairedDataset("YCB-Slide_dataset_path/YCB-Slide_touch_training_data.csv", "YCB-Slide_dataset_path/YCB-Slide_vision_training_data.csv", transform=data_transform)
+    touch_vision_paired_training_dataset = YCBSlidedPairedDataset_precomputed_vision("YCB-Slide_dataset_path/YCB-Slide_touch_training_data.csv", "YCB-Slide_dataset_path/precomputed_training_vision_features.pt", transform=data_transform)
     touch_vision_paired_training_subdataset = torch.utils.data.Subset(touch_vision_paired_training_dataset, indices=range(0, len(touch_vision_paired_training_dataset), 10))
     touch_testing_dataset = YCBSlideDataset("YCB-Slide_dataset_path/YCB-Slide_touch_testing_data.csv", transform=data_transform)
     touch_testing_subdataset = torch.utils.data.Subset(touch_testing_dataset, indices=range(0, len(touch_testing_dataset), 100))
@@ -217,21 +218,11 @@ if __name__ == "__main__":
     train_sampler = DistributedSampler(touch_vision_paired_training_subdataset)
     touch_vision_paired_training_dataloader = torch.utils.data.DataLoader(
         touch_vision_paired_training_subdataset, 
-        batch_size=2, 
+        batch_size=8, 
         sampler=train_sampler, 
         num_workers=4, 
         pin_memory=True,
     )
-
-    vision_features_list = []
-    imagebind_model.to(device)
-    for batch in touch_vision_paired_training_dataloader:
-        (touch_images, vision_images), labels = batch
-        # Process the vision images to extract features
-        with torch.no_grad():
-            vision_features = imagebind_model(vision_images.to(device))
-        vision_features_list.append(vision_features)
-    imagebind_model.cpu()
 
     # 測試集通常只在 Rank 0 上評估，或者保持原樣讓每張卡跑全部測試集再平均
     touch_testing_dataloader = torch.utils.data.DataLoader(
