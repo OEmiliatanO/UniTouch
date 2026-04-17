@@ -116,7 +116,8 @@ def align(vision_model, touch_model, paired_dataloader, device, epochs=5, local_
     progress_bar = tqdm(total=epochs, desc="Aligning Models (InfoNCE Training)")
 
     for epoch in range(epochs):
-        paired_dataloader.sampler.set_epoch(epoch)
+        if hasattr(paired_dataloader.sampler, "set_epoch"):
+            paired_dataloader.sampler.set_epoch(epoch)
         tot_loss = 0
         for batch in paired_dataloader:
             (touch_images, vision_images), _ = batch
