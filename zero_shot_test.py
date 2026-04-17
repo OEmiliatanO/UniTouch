@@ -131,8 +131,7 @@ def evaluate(model, dataloader, text_features, device):
     acc = (preds == torch.tensor(all_labels)).float().mean().item()
     return acc
 
-def align(vision_model, touch_model, paired_dataloader, device, epochs=5, local_rank=0): # infoNCE
-    vision_model.eval()
+def align(vision_features_list, touch_model, paired_dataloader, device, epochs=5, local_rank=0): # infoNCE
     touch_model.train()
     optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, touch_model.parameters()), lr=1e-5)
 
@@ -145,6 +144,7 @@ def align(vision_model, touch_model, paired_dataloader, device, epochs=5, local_
         if hasattr(paired_dataloader.sampler, "set_epoch"):
             paired_dataloader.sampler.set_epoch(epoch)
         tot_loss = 0
+        i = 0
         for batch in paired_dataloader:
             (touch_images, vision_images), _ = batch
             touch_images = touch_images.to(device)
@@ -152,30 +152,20 @@ def align(vision_model, touch_model, paired_dataloader, device, epochs=5, local_
 
             optimizer.zero_grad()
             batch_touch_features = touch_model({ModalityType.TOUCH: touch_images})[ModalityType.TOUCH]
-            with torch.no_grad():
-                batch_vision_features = vision_model({ModalityType.VISION: vision_images})[ModalityType.VISION]
-                local_vision_features = F.normalize(batch_vision_features, dim=1)
-
-                global_vision_list = [torch.zeros_like(local_vision_features) for _ in range(dist.get_world_size())]
-                dist.all_gather(global_vision_list, local_vision_features)
-                global_vision_features = torch.cat(global_vision_list, dim=0)
             # 計算 infoNCE loss 並對 touch_model 進行反向傳播
             temperature = 0.07
             
             local_touch_features = F.normalize(batch_touch_features, dim=1)
             global_touch_features = gather_features(local_touch_features)
 
-            logits_T2V = local_touch_features @ global_vision_features.T / temperature 
-            logits_V2T = local_vision_features @ global_touch_features.T / temperature
+            logits_T2V = local_touch_features @ vision_features_list[i].T / temperature 
+            logits_V2T = vision_features_list[i] @ global_touch_features.T / temperature
 
             batch_size = local_touch_features.size(0)
             rank_offset = dist.get_rank() * batch_size
             labels = torch.arange(batch_size, dtype=torch.long, device=device) + rank_offset
             loss = (F.cross_entropy(logits_T2V, labels) + F.cross_entropy(logits_V2T, labels)) / 2
-            
-            # scaler.scale(loss).backward()
-            # scaler.step(optimizer)
-            # scaler.update()
+
             loss.backward()
             optimizer.step()
             optimizer.zero_grad()
@@ -196,7 +186,7 @@ if __name__ == "__main__":
     device = torch.device(f"cuda:{local_rank}")
     
     # 1. 載入基礎模型與資料 (請替換為實際的 dataset 實例化)
-    imagebind_model = imagebind_huge(pretrained=True).to(device)
+    imagebind_model = imagebind_huge(pretrained=True)
     imagebind_model.eval()
     base_touch_model = x2touch(pretrained=False)
 
@@ -231,9 +221,18 @@ if __name__ == "__main__":
         sampler=train_sampler, 
         num_workers=4, 
         pin_memory=True,
-        drop_last=True
     )
-    
+
+    vision_features_list = []
+    imagebind_model.to(device)
+    for batch in touch_vision_paired_training_dataloader:
+        (touch_images, vision_images), labels = batch
+        # Process the vision images to extract features
+        with torch.no_grad():
+            vision_features = imagebind_model(vision_images.to(device))
+        vision_features_list.append(vision_features)
+    imagebind_model.cpu()
+
     # 測試集通常只在 Rank 0 上評估，或者保持原樣讓每張卡跑全部測試集再平均
     touch_testing_dataloader = torch.utils.data.DataLoader(
         touch_testing_subdataset, 
@@ -270,7 +269,7 @@ if __name__ == "__main__":
         
         # Step C: Post-alignment Training (InfoNCE)
         print("--- Running Post-alignment Training ---")
-        model = align(imagebind_model, model, touch_vision_paired_training_dataloader, device, epochs=5, local_rank=local_rank)
+        model = align(vision_features_list, model, touch_vision_paired_training_dataloader, device, epochs=5, local_rank=local_rank)
         
         # Step D: 評估 Final Performance
         if local_rank == 0:
