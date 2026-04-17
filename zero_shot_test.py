@@ -113,7 +113,7 @@ def align(vision_model, touch_model, paired_dataloader, device, epochs=5, local_
     optimizer = torch.optim.Adam(touch_model.parameters(), lr=1e-5)
 
     is_main_process = (local_rank == 0)
-    progress_bar = tqdm(tot=epochs, desc="Aligning Models (InfoNCE Training)")
+    progress_bar = tqdm(total=epochs, desc="Aligning Models (InfoNCE Training)")
 
     for epoch in range(epochs):
         paired_dataloader.sampler.set_epoch(epoch)
