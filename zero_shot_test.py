@@ -109,15 +109,42 @@ def initialize_touch_model(imagebind_model, touch_model, init_strategy="random",
 
     return new_touch_model
 
+# @torch.no_grad()
+# def evaluate(model, dataloader, text_features, device):
+#     actual_model = model.module if isinstance(model, DDP) else model
+#     actual_model.eval()
+#     preds = []
+#     all_labels = []
+    
+#     for touch_data, labels in tqdm(dataloader, desc="Evaluating", disable=dist.get_rank() != 0):
+#         touch_data = touch_data.to(device)
+#         outputs = actual_model({ModalityType.TOUCH: touch_data}) 
+#         touch_features = outputs[ModalityType.TOUCH] 
+        
+#         touch_features = F.normalize(touch_features, dim=1)
+#         text_features_norm = F.normalize(text_features, dim=1)
+        
+#         batch_preds = (touch_features @ text_features_norm.T).argmax(dim=-1)
+#         preds.append(batch_preds.cpu())
+#         all_labels.extend(labels.cpu().tolist())
+        
+#     preds = torch.cat(preds, dim=0)
+#     acc = (preds == torch.tensor(all_labels)).float().mean().item()
+#     return acc
+
 @torch.no_grad()
 def evaluate(model, dataloader, text_features, device):
     actual_model = model.module if isinstance(model, DDP) else model
     actual_model.eval()
-    preds = []
-    all_labels = []
     
+    local_correct = 0
+    local_total = 0
+    
+    # 讓所有 Rank 都參與 tqdm 進度條，但只在 Rank 0 顯示
     for touch_data, labels in tqdm(dataloader, desc="Evaluating", disable=dist.get_rank() != 0):
         touch_data = touch_data.to(device)
+        labels = labels.to(device)
+        
         outputs = actual_model({ModalityType.TOUCH: touch_data}) 
         touch_features = outputs[ModalityType.TOUCH] 
         
@@ -125,12 +152,25 @@ def evaluate(model, dataloader, text_features, device):
         text_features_norm = F.normalize(text_features, dim=1)
         
         batch_preds = (touch_features @ text_features_norm.T).argmax(dim=-1)
-        preds.append(batch_preds.cpu())
-        all_labels.extend(labels.cpu().tolist())
         
-    preds = torch.cat(preds, dim=0)
-    acc = (preds == torch.tensor(all_labels)).float().mean().item()
-    return acc
+        # 統計當前 GPU 的局部結果
+        local_correct += (batch_preds == labels).sum().item()
+        local_total += labels.size(0)
+        
+    # 將 local 變數轉換為 Tensor 以便進行 NCCL 通訊
+    # shape: [2] -> [correct_count, total_count]
+    metrics = torch.tensor([local_correct, local_total], dtype=torch.float32, device=device)
+    
+    # 核心同步操作：將所有 GPU 的 metrics 張量進行加總
+    dist.all_reduce(metrics, op=dist.ReduceOp.SUM)
+    
+    global_correct = metrics[0].item()
+    global_total = metrics[1].item()
+    
+    # 計算全域準確率
+    global_acc = global_correct / global_total if global_total > 0 else 0.0
+    
+    return global_acc
 
 def align(touch_model, paired_dataloader, device, epochs=5, local_rank=0): # infoNCE
     touch_model.train()
@@ -223,7 +263,7 @@ if __name__ == "__main__":
     # touch_vision_paired_training_dataloader = torch.utils.data.DataLoader(touch_vision_paired_training_subdataset, batch_size=2, shuffle=True, num_workers=4, pin_memory=True)
     # touch_testing_dataloader = torch.utils.data.DataLoader(touch_testing_subdataset, batch_size=64, shuffle=False, num_workers=4, pin_memory=True)
 
-    train_sampler = DistributedSampler(touch_vision_paired_training_subdataset)
+    train_sampler = DistributedSampler(touch_vision_paired_training_subdataset, drop_last=True)
     touch_vision_paired_training_dataloader = torch.utils.data.DataLoader(
         touch_vision_paired_training_subdataset, 
         batch_size=20, 
@@ -233,10 +273,11 @@ if __name__ == "__main__":
     )
 
     # 測試集通常只在 Rank 0 上評估，或者保持原樣讓每張卡跑全部測試集再平均
+    test_sampler = DistributedSampler(touch_testing_subdataset, shuffle=False, drop_last=True)
     touch_testing_dataloader = torch.utils.data.DataLoader(
         touch_testing_subdataset, 
         batch_size=64, 
-        shuffle=False, 
+        sampler=test_sampler,
         num_workers=4, 
         pin_memory=True
     )
@@ -245,7 +286,8 @@ if __name__ == "__main__":
     results = {}
 
     for strategy in strategies:
-        print(f"\n{'='*20} Testing Strategy: {strategy} {'='*20}")
+        if local_rank == 0:
+            print(f"\n{'='*20} Testing Strategy: {strategy} {'='*20}")
         
         # Step A: 權重初始化
         model = initialize_touch_model(
@@ -257,23 +299,28 @@ if __name__ == "__main__":
         ).to(device)
         
         model = DDP(model, device_ids=[local_rank], output_device=local_rank)
+
         # Step B: 評估 Initial Performance (Zero-shot)
         if local_rank == 0:
             print("--- Evaluating Initial Performance ---")
-            init_acc = evaluate(model, touch_testing_dataloader, text_features, device)
-        else:
-            init_acc = 0.0
+
+        init_acc = evaluate(model, touch_testing_dataloader, text_features, device)
         
         dist.barrier()
         
         # Step C: Post-alignment Training (InfoNCE)
-        print("--- Running Post-alignment Training ---")
+        if local_rank == 0:
+            print("--- Running Post-alignment Training ---")
+
         model = align(model, touch_vision_paired_training_dataloader, device, epochs=150, local_rank=local_rank)
         
         # Step D: 評估 Final Performance
         if local_rank == 0:
             print("--- Evaluating Final Performance ---")
-            final_acc = evaluate(model, touch_testing_dataloader, text_features, device)
+            
+        final_acc = evaluate(model, touch_testing_dataloader, text_features, device)
+
+        if local_rank == 0:
             results[strategy] = {"Init_Acc": init_acc, "Final_Acc": final_acc}
             print(f"[{strategy}] Init Acc: {init_acc:.4f} -> Final Acc: {final_acc:.4f}")
 
