@@ -30,8 +30,10 @@ with torch.no_grad():
     text_features = text_features[torch.arange(text_features.shape[0]), eos_indices]
 text_features = text_features.cpu()
 
-torch.save(text_features, "YCB-Slide_text_features.pt")
-root_dir = "/tmp3/Hans/YCB-Slide/dataset/"
+save_dir = "YCB-Slide_dataset_path"
+
+torch.save(text_features, f"{save_dir}/YCB-Slide_text_features.pt")
+root_dir = "/work/hans1010/YCB-Slide/dataset/"
 dataset_len = 5
 classes_touch_paths = {
     "sugar box" : [glob.glob(f"{root_dir}/real/004_sugar_box/dataset_{dataset_idx}/frames/*.jpg") for dataset_idx in range(dataset_len)],
@@ -46,7 +48,7 @@ classes_touch_paths = {
     "baseball" : [glob.glob(f"{root_dir}/real/055_baseball/dataset_{dataset_idx}/frames/*.jpg") for dataset_idx in range(dataset_len)]
 }
 
-vision_root_dir = "/tmp3/Hans/ycb_vision"
+vision_root_dir = "/work/hans1010/ycb_vision"
 classes_vision_paths = {
     "sugar box" : [sorted(glob.glob(f"{vision_root_dir}/004_sugar_box/dataset_{dataset_idx}/sim_frames/*.png")) for dataset_idx in range(dataset_len)],
     "tomato soup can" : [sorted(glob.glob(f"{vision_root_dir}/005_tomato_soup_can/dataset_{dataset_idx}/sim_frames/*.png")) for dataset_idx in range(dataset_len)],
@@ -80,17 +82,19 @@ rng.shuffle(vision_paths)
 touch_paths, all_labels = zip(*touch_paths)
 vision_paths, _ = zip(*vision_paths)
 
-training_touch_paths = touch_paths[:int(0.1 * len(touch_paths))]
-testing_touch_paths = touch_paths[int(0.1 * len(touch_paths)):]
-training_label = all_labels[:int(0.1 * len(all_labels))]
-testing_label = all_labels[int(0.1 * len(all_labels)):]
-pd.DataFrame({"path": training_touch_paths, "label": training_label}).to_csv("YCB-Slide_touch_training_data.csv", index=False)
-pd.DataFrame({"path": testing_touch_paths, "label": testing_label}).to_csv("YCB-Slide_touch_testing_data.csv", index=False)
+training_ratio = 0.8
 
-training_vision_paths = vision_paths[:int(0.1 * len(vision_paths))]
-testing_vision_paths = vision_paths[int(0.1 * len(vision_paths)):]
-pd.DataFrame({"path": training_vision_paths, "label": training_label}).to_csv("YCB-Slide_vision_training_data.csv", index=False)
-pd.DataFrame({"path": testing_vision_paths, "label": testing_label}).to_csv("YCB-Slide_vision_testing_data.csv", index=False)
+training_touch_paths = touch_paths[:int(training_ratio * len(touch_paths))]
+testing_touch_paths = touch_paths[int(training_ratio * len(touch_paths)):]
+training_label = all_labels[:int(training_ratio * len(all_labels))]
+testing_label = all_labels[int(training_ratio * len(all_labels)):]
+pd.DataFrame({"path": training_touch_paths, "label": training_label}).to_csv(f"{save_dir}/YCB-Slide_touch_training_data.csv", index=False)
+pd.DataFrame({"path": testing_touch_paths, "label": testing_label}).to_csv(f"{save_dir}/YCB-Slide_touch_testing_data.csv", index=False)
+
+training_vision_paths = vision_paths[:int(training_ratio * len(vision_paths))]
+testing_vision_paths = vision_paths[int(training_ratio * len(vision_paths)):]
+pd.DataFrame({"path": training_vision_paths, "label": training_label}).to_csv(f"{save_dir}/YCB-Slide_vision_training_data.csv", index=False)
+pd.DataFrame({"path": testing_vision_paths, "label": testing_label}).to_csv(f"{save_dir}/YCB-Slide_vision_testing_data.csv", index=False)
 
 import ImageBind.data as data
 from ImageBind.models.x2touch_model_part import imagebind_huge, x2touch, ModalityType
@@ -114,8 +118,8 @@ data_transform = transforms.Compose(
     ]
 )
 
-touch_vision_paired_training_dataset = YCBSlidePairedDataset("YCB-Slide_touch_training_data.csv", "YCB-Slide_vision_training_data.csv", transform=data_transform)
-touch_testing_dataset = YCBSlideDataset("YCB-Slide_touch_testing_data.csv", transform=data_transform)
+touch_vision_paired_training_dataset = YCBSlidePairedDataset(f"{save_dir}/YCB-Slide_touch_training_data.csv", f"{save_dir}/YCB-Slide_vision_training_data.csv", transform=data_transform)
+touch_testing_dataset = YCBSlideDataset(f"{save_dir}/YCB-Slide_touch_testing_data.csv", transform=data_transform)
 
 touch_vision_paired_training_dataloader = torch.utils.data.DataLoader(
     touch_vision_paired_training_dataset, 
@@ -133,4 +137,4 @@ for batch in touch_vision_paired_training_dataloader:
         vision_features = imagebind_model({ModalityType.VISION: vision_images.to(device)})[ModalityType.VISION].cpu()
     vision_features_list.append(vision_features)
 vision_features = torch.cat(vision_features_list, dim=0)
-torch.save(vision_features, "precomputed_training_vision_features.pt")
+torch.save(vision_features, f"{save_dir}/precomputed_training_vision_features.pt")
