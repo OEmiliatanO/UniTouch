@@ -6,18 +6,22 @@
 #SBATCH --error=/work/hans1010/slurm_log/%x_%A_%a.err
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=32G
-#SBATCH --time=48:00:00
+#SBATCH --gres=gpu:4
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=360G
+#SBATCH --time=96:00:00
 #SBATCH --array=0-19
 #SBATCH --account="MST114289"
-#SBATCH --partition=gp2d
+#SBATCH --partition=gp4d
 
 # original: #SBATCH --array=0-999%20
 
+# random
+# vision_noise
+# vision_clean
+
 # ---- job packing ----
-TOTAL_EXPERIMENTS=1000
+TOTAL_EXPERIMENTS=180
 NUM_JOBS=20
 CHUNK_SIZE=$(( (TOTAL_EXPERIMENTS + NUM_JOBS - 1) / NUM_JOBS ))
 START_ID=$(( SLURM_ARRAY_TASK_ID * CHUNK_SIZE ))
@@ -42,9 +46,11 @@ for (( i=START_ID; i<=END_ID; i++ )); do
 
     echo "====> Starting Sub-experiment Real ID: $i"
 
+    RANDOM_PORT=$((RANDOM % 1000 + 25000))
+
     export SLURM_ARRAY_TASK_ID=$i
 
-    python zero_shot_test_slurm.py
+    torchrun --nproc_per_node=4 --master_port=$RANDOM_PORT zero_shot_test_slurm.py "vision_noise"
 
     echo "====> Finished Sub-experiment Real ID: $i"
 done
