@@ -56,7 +56,7 @@ def gather_features(features):
     return features
 
 @torch.no_grad()
-def initialize_touch_model(imagebind_model, touch_model, init_strategy="random", noise_std=0.002, seed=0):
+def initialize_touch_model(imagebind_model, init_strategy="random", noise_std=0.002, seed=0):
     """
     init_strategy:
         - "random": 一般的隨機初始權重 (維持 x2touch(pretrained=False) 的狀態)
@@ -65,7 +65,7 @@ def initialize_touch_model(imagebind_model, touch_model, init_strategy="random",
     """
     imagebind_model.requires_grad_(True)
     set_seed(seed)
-    new_touch_model = touch_model
+    new_touch_model = x2touch(pretrained=False)
     new_touch_model.requires_grad_(False)
     vision_components = [
         imagebind_model.modality_preprocessors[ModalityType.VISION],
@@ -236,7 +236,6 @@ if __name__ == "__main__":
     # 1. 載入基礎模型與資料 (請替換為實際的 dataset 實例化)
     imagebind_model = imagebind_huge(pretrained=True)
     imagebind_model.eval()
-    base_touch_model = x2touch(pretrained=False)
 
     data_transform = transforms.Compose(
         [
@@ -292,7 +291,6 @@ if __name__ == "__main__":
         # Step A: 權重初始化
         model = initialize_touch_model(
             imagebind_model, 
-            base_touch_model, 
             init_strategy=strategy, 
             noise_std=0.002, 
             seed=42
@@ -306,13 +304,13 @@ if __name__ == "__main__":
 
         init_acc = evaluate(model, touch_testing_dataloader, text_features, device)
         
-        dist.barrier()
+        dist.barrier(local_rank)
         
         # Step C: Post-alignment Training (InfoNCE)
         if local_rank == 0:
             print("--- Running Post-alignment Training ---")
 
-        model = align(model, touch_vision_paired_training_dataloader, device, epochs=150, local_rank=local_rank)
+        model = align(model, touch_vision_paired_training_dataloader, device, epochs=1, local_rank=local_rank)
         
         # Step D: 評估 Final Performance
         if local_rank == 0:
@@ -325,7 +323,7 @@ if __name__ == "__main__":
             print(f"[{strategy}] Init Acc: {init_acc:.4f} -> Final Acc: {final_acc:.4f}")
 
         # 再次同步
-        dist.barrier()
+        dist.barrier(local_rank)
 
         del model
         torch.cuda.empty_cache()
