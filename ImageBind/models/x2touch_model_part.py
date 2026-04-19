@@ -469,7 +469,7 @@ class ImageBindModel(nn.Module):
             modality_heads[ModalityType.TEXT] = SelectEOSAndProject(
                 proj=nn.Sequential(
                     nn.LayerNorm(normalized_shape=text_embed_dim, eps=1e-6),
-                    #nn.Linear(text_embed_dim, out_embed_dim, bias=False),
+                    nn.Linear(text_embed_dim, out_embed_dim, bias=False), # Why they commented out the bias? 
                 )
             )
 
