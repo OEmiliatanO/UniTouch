@@ -156,7 +156,7 @@ def evaluate(model, dataloader, text_features, device):
     
     return global_acc
 
-def align(touch_model, paired_dataloader, device, epochs=5, local_rank=0): # infoNCE
+def align(touch_model, paired_dataloader, device, epochs=5, local_rank=0, eval_dataloader=None, text_features=None, evaluate_fn=None): # infoNCE
     touch_model.train()
     optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, touch_model.parameters()), lr=1e-5)
 
@@ -165,11 +165,18 @@ def align(touch_model, paired_dataloader, device, epochs=5, local_rank=0): # inf
     is_main_process = (local_rank == 0)
     progress_bar = tqdm(total=epochs, desc="Aligning Models (InfoNCE Training)", disable=not is_main_process)
 
+    performance_history = {
+        "loss": [],
+        "accuracy": []
+    }
+
     for epoch in range(epochs):
         if hasattr(paired_dataloader.sampler, "set_epoch"):
             paired_dataloader.sampler.set_epoch(epoch)
+        
+        touch_model.train()
         tot_loss = 0
-        i = 0
+
         for batch in tqdm(paired_dataloader, disable=not is_main_process, leave=False):
             (touch_images, vision_features), _ = batch
             touch_images = touch_images.to(device)
@@ -206,12 +213,24 @@ def align(touch_model, paired_dataloader, device, epochs=5, local_rank=0): # inf
 
         avg_loss = torch.tensor(tot_loss / len(paired_dataloader), device=device)
         dist.all_reduce(avg_loss, op=dist.ReduceOp.SUM)
-        avg_loss = avg_loss / dist.get_world_size()
+        global_avg_loss = (avg_loss / dist.get_world_size()).item()
+
+        epoch_acc = None
+        if eval_dataloader is not None and text_features is not None and evaluate_fn is not None:
+            epoch_acc = evaluate_fn(touch_model, eval_dataloader, text_features, device)
+            
+            touch_model.train()
 
         if is_main_process:
-            progress_bar.set_postfix({"Epoch Loss": avg_loss.item()})
+            performance_history["loss"].append(global_avg_loss)
+            if epoch_acc is not None:
+                performance_history["accuracy"].append(epoch_acc)
+                progress_bar.set_postfix({"Loss": f"{global_avg_loss:.4f}", "Acc": f"{epoch_acc:.4f}"})
+            else:
+                progress_bar.set_postfix({"Epoch Loss": avg_loss})
             progress_bar.update(1)
-    return touch_model
+        dist.barrier(device_ids=[local_rank])
+    return touch_model, performance_history
 
 if __name__ == "__main__":
     seed = int(os.environ.get('SLURM_ARRAY_TASK_ID', 0))
@@ -299,7 +318,8 @@ if __name__ == "__main__":
     if local_rank == 0:
         print("--- Running Post-alignment Training ---")
 
-    model = align(model, touch_vision_paired_training_dataloader, device, epochs=10, local_rank=local_rank)
+    model, performance_history = align(model, touch_vision_paired_training_dataloader, device, epochs=10, local_rank=local_rank, 
+                                       eval_dataloader=touch_testing_dataloader, text_features=text_features, evaluate_fn=evaluate)
     
     # Step D: 評估 Final Performance
     if local_rank == 0:
@@ -308,7 +328,7 @@ if __name__ == "__main__":
     final_acc = evaluate(model, touch_testing_dataloader, text_features, device)
 
     if local_rank == 0:
-        results[strategy] = {"Init_Acc": init_acc, "Final_Acc": final_acc}
+        results[strategy] = {"Init_Acc": init_acc, "Final_Acc": final_acc, "Performance_History": performance_history}
         print(f"[{strategy}] Init Acc: {init_acc:.4f} -> Final Acc: {final_acc:.4f}")
 
     # 再次同步
@@ -318,12 +338,9 @@ if __name__ == "__main__":
     torch.cuda.empty_cache()
 
     if local_rank == 0:
-        print("\n================ Final Summary ================")
-        for k, v in results.items():
-            print(f"Strategy: {k:<15} | Init Acc: {v['Init_Acc']:.4f} | Final Acc: {v['Final_Acc']:.4f}")
         os.makedirs("results", exist_ok=True)
         with open(f"results/result_{strategy}_{seed}.json", "w") as f:
-            json.dump(result, f)
+            json.dump(results, f)
 
     if dist.is_initialized():
         dist.destroy_process_group()
