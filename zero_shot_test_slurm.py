@@ -14,6 +14,7 @@ import random
 import sys
 from torch.amp import autocast, GradScaler
 from torch.amp import custom_fwd, custom_bwd
+import wandb
 
 import torch.distributed as dist
 from torch.distributed.nn.functional import all_gather as diff_all_gather
@@ -156,7 +157,7 @@ def evaluate(model, dataloader, text_features, device):
     
     return global_acc
 
-def align(touch_model, paired_dataloader, device, epochs=5, local_rank=0, eval_dataloader=None, text_features=None, evaluate_fn=None): # infoNCE
+def align(touch_model, paired_dataloader, device, epochs=5, local_rank=0, eval_dataloader=None, text_features=None, evaluate_fn=None, logger=None): # infoNCE
     touch_model.train()
     optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, touch_model.parameters()), lr=1e-5)
 
@@ -223,11 +224,12 @@ def align(touch_model, paired_dataloader, device, epochs=5, local_rank=0, eval_d
 
         if is_main_process:
             performance_history["loss"].append(global_avg_loss)
+            logger.log({"Epoch": epoch, "Loss": global_avg_loss, "Accuracy": epoch_acc})
             if epoch_acc is not None:
                 performance_history["accuracy"].append(epoch_acc)
                 progress_bar.set_postfix({"Loss": f"{global_avg_loss:.4f}", "Acc": f"{epoch_acc:.4f}"})
             else:
-                progress_bar.set_postfix({"Epoch Loss": avg_loss})
+                progress_bar.set_postfix({"Epoch Loss": global_avg_loss})
             progress_bar.update(1)
         dist.barrier(device_ids=[local_rank])
     return touch_model, performance_history
@@ -286,6 +288,7 @@ if __name__ == "__main__":
     )
 
     strategy = sys.argv[1]
+    logger = wandb.init(project="tactile_zero_shot_test", name=f"strategy_{strategy}_seed_{seed}", reinit=True)
     results = {}
 
     if local_rank == 0:
@@ -306,6 +309,7 @@ if __name__ == "__main__":
         print("--- Evaluating Initial Performance ---")
 
     init_acc = evaluate(model, touch_testing_dataloader, text_features, device)
+    logger.log({"Initial Accuracy": init_acc})
     
     dist.barrier(device_ids=[local_rank])
     
@@ -314,7 +318,7 @@ if __name__ == "__main__":
         print("--- Running Post-alignment Training ---")
 
     model, performance_history = align(model, touch_vision_paired_training_dataloader, device, epochs=10, local_rank=local_rank, 
-                                       eval_dataloader=touch_testing_dataloader, text_features=text_features, evaluate_fn=evaluate)
+                                       eval_dataloader=touch_testing_dataloader, text_features=text_features, evaluate_fn=evaluate, logger=logger)
     
     # Step D: 評估 Final Performance
     if local_rank == 0:
@@ -325,6 +329,7 @@ if __name__ == "__main__":
     if local_rank == 0:
         results[strategy] = {"Init_Acc": init_acc, "Final_Acc": final_acc, "Performance_History": performance_history}
         print(f"[{strategy}] Init Acc: {init_acc:.4f} -> Final Acc: {final_acc:.4f}")
+        logger.log({"Final Accuracy": final_acc})
 
     # 再次同步
     dist.barrier(device_ids=[local_rank])
