@@ -159,7 +159,7 @@ def evaluate(model, dataloader, text_features, device):
 
 def align(touch_model, paired_dataloader, device, epochs=5, local_rank=0, eval_dataloader=None, text_features=None, evaluate_fn=None, logger=None): # infoNCE
     touch_model.train()
-    optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, touch_model.parameters()), lr=1e-5)
+    optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, touch_model.parameters()), lr=1e-4)
 
     # scaler = GradScaler()
 
