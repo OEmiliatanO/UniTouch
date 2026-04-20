@@ -469,7 +469,7 @@ class ImageBindModel(nn.Module):
             modality_heads[ModalityType.TEXT] = SelectEOSAndProject(
                 proj=nn.Sequential(
                     nn.LayerNorm(normalized_shape=text_embed_dim, eps=1e-6),
-                    nn.Linear(text_embed_dim, out_embed_dim, bias=False), # Why they commented out the bias? 
+                    nn.Linear(text_embed_dim, out_embed_dim, bias=False), # Why they commented out this linear layer? 
                 )
             )
 
@@ -551,7 +551,7 @@ class ImageBindModel(nn.Module):
         if 'touch' in self.modality_list:
             modality_postprocessors[ModalityType.TOUCH] = nn.Sequential(
                 Normalize(dim=-1),
-                LearnableLogitScaling(logit_scale_init=5.0, learnable=False),
+                # LearnableLogitScaling(logit_scale_init=5.0, learnable=False),
             )
 
 

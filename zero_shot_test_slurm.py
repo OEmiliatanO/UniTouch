@@ -177,6 +177,8 @@ def align(touch_model, paired_dataloader, device, epochs=5, local_rank=0, eval_d
         
         touch_model.train()
         tot_loss = 0
+        tot_alignment = 0
+        tot_uniformity = 0
 
         for batch in tqdm(paired_dataloader, disable=not is_main_process, leave=False):
             (touch_images, vision_features), _ = batch
@@ -190,6 +192,11 @@ def align(touch_model, paired_dataloader, device, epochs=5, local_rank=0, eval_d
             
             local_touch_features = batch_touch_features
             local_vision_features = vision_features
+            
+            alignment_metric = (local_touch_features - local_vision_features).norm(p=2, dim=1).pow(2).mean()
+            sq_dist = torch.pdist(local_touch_features, p=2).pow(2)
+            uniformity_metric = torch.log(torch.mean(torch.exp(-2.0 * sq_dist)))
+
             global_touch_list = diff_all_gather(local_touch_features)
             global_touch_features = torch.cat(global_touch_list, dim=0)
 
@@ -211,6 +218,10 @@ def align(touch_model, paired_dataloader, device, epochs=5, local_rank=0, eval_d
             optimizer.zero_grad()
             
             tot_loss += loss.item()
+            tot_alignment += alignment_metric.item()
+            tot_uniformity += uniformity_metric.item()
+            if is_main_process:
+                logger.log({"step/loss": loss.item(), "step/alignment": alignment_metric.item(), "step/uniformity": uniformity_metric.item()})
 
         avg_loss = torch.tensor(tot_loss / len(paired_dataloader), device=device)
         dist.all_reduce(avg_loss, op=dist.ReduceOp.SUM)
@@ -223,8 +234,9 @@ def align(touch_model, paired_dataloader, device, epochs=5, local_rank=0, eval_d
             touch_model.train()
 
         if is_main_process:
+            print(f"loss: {global_avg_loss}")
             performance_history["loss"].append(global_avg_loss)
-            logger.log({"Epoch": epoch, "Loss": global_avg_loss, "Accuracy": epoch_acc})
+            logger.log({"epoch/epoch": epoch, "epoch/loss": global_avg_loss, "epoch/accuracy": epoch_acc})
             if epoch_acc is not None:
                 performance_history["accuracy"].append(epoch_acc)
                 progress_bar.set_postfix({"Loss": f"{global_avg_loss:.4f}", "Acc": f"{epoch_acc:.4f}"})
@@ -261,9 +273,9 @@ if __name__ == "__main__":
 
     # touch_vision_paired_training_dataset = YCBSlidePairedDataset("YCB-Slide_dataset_path/YCB-Slide_touch_training_data.csv", "YCB-Slide_dataset_path/YCB-Slide_vision_training_data.csv", transform=data_transform)
     touch_vision_paired_training_dataset = YCBSlidedPairedDataset_precomputed_vision("YCB-Slide_dataset_path/YCB-Slide_touch_training_data.csv", "YCB-Slide_dataset_path/precomputed_training_vision_features.pt", transform=data_transform)
-    touch_vision_paired_training_subdataset = torch.utils.data.Subset(touch_vision_paired_training_dataset, indices=range(0, len(touch_vision_paired_training_dataset), 1))
+    touch_vision_paired_training_subdataset = torch.utils.data.Subset(touch_vision_paired_training_dataset, indices=range(0, len(touch_vision_paired_training_dataset), 3))
     touch_testing_dataset = YCBSlideDataset("YCB-Slide_dataset_path/YCB-Slide_touch_testing_data.csv", transform=data_transform)
-    touch_testing_subdataset = torch.utils.data.Subset(touch_testing_dataset, indices=range(0, len(touch_testing_dataset), 1))
+    touch_testing_subdataset = torch.utils.data.Subset(touch_testing_dataset, indices=range(0, len(touch_testing_dataset), 100))
 
     # touch_vision_paired_training_dataloader = torch.utils.data.DataLoader(touch_vision_paired_training_subdataset, batch_size=2, shuffle=True, num_workers=4, pin_memory=True)
     # touch_testing_dataloader = torch.utils.data.DataLoader(touch_testing_subdataset, batch_size=64, shuffle=False, num_workers=4, pin_memory=True)
@@ -288,11 +300,11 @@ if __name__ == "__main__":
     )
 
     strategy = sys.argv[1]
-    logger = wandb.init(project="tactile_zero_shot_test", name=f"strategy_{strategy}_seed_{seed}", reinit=True)
     results = {}
 
     if local_rank == 0:
         print(f"\n{'='*20} Testing Strategy: {strategy} {'='*20}")
+        logger = wandb.init(project="tactile_zero_shot_test", name=f"strategy_{strategy}_seed_{seed}", reinit=True)
     
     # Step A: 權重初始化
     model = initialize_touch_model(
@@ -309,7 +321,8 @@ if __name__ == "__main__":
         print("--- Evaluating Initial Performance ---")
 
     init_acc = evaluate(model, touch_testing_dataloader, text_features, device)
-    logger.log({"Initial Accuracy": init_acc})
+    if local_rank == 0:
+        logger.log({"epoch/accuracy": init_acc})
     
     dist.barrier(device_ids=[local_rank])
     
@@ -318,7 +331,7 @@ if __name__ == "__main__":
         print("--- Running Post-alignment Training ---")
 
     model, performance_history = align(model, touch_vision_paired_training_dataloader, device, epochs=10, local_rank=local_rank, 
-                                       eval_dataloader=touch_testing_dataloader, text_features=text_features, evaluate_fn=evaluate, logger=logger)
+                                       eval_dataloader=touch_testing_dataloader, text_features=text_features, evaluate_fn=evaluate, logger=logger if local_rank == 0 else None)
     
     # Step D: 評估 Final Performance
     if local_rank == 0:
@@ -329,18 +342,22 @@ if __name__ == "__main__":
     if local_rank == 0:
         results[strategy] = {"Init_Acc": init_acc, "Final_Acc": final_acc, "Performance_History": performance_history}
         print(f"[{strategy}] Init Acc: {init_acc:.4f} -> Final Acc: {final_acc:.4f}")
-        logger.log({"Final Accuracy": final_acc})
+        logger.log({"final_accuracy": final_acc})
 
     # 再次同步
     dist.barrier(device_ids=[local_rank])
-
-    del model
-    torch.cuda.empty_cache()
 
     if local_rank == 0:
         os.makedirs("results", exist_ok=True)
         with open(f"results/result_{strategy}_{seed}.json", "w") as f:
             json.dump(results, f)
+        model_to_save = model.module if isinstance(model, DDP) else model
+        torch.save(model_to_save.state_dict(), f"results/touch_model_{strategy}_{seed}.pth")
+
+    dist.barrier(device_ids=[local_rank])
+
+    del model
+    torch.cuda.empty_cache()
 
     if dist.is_initialized():
         dist.destroy_process_group()
