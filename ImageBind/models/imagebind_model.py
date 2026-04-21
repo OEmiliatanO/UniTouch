@@ -519,16 +519,31 @@ def imagebind_huge(pretrained=False):
         imu_drop_path=0.7,
     )
 
+    # if pretrained:
+    #     if not os.path.exists("./ckpts/imagebind_w3D.pth"):
+    #         print(
+    #             "Downloading the pre-train weight of ImageBind with 3D encoder to ./ckpts/imagebind_w3D.pth ..."
+    #         )
+    #         os.makedirs("./ckpts", exist_ok=True)
+    #         torch.hub.download_url_to_file(
+    #             "https://huggingface.co/ZiyuG/ImageBind_w3D/resolve/e9206a10f118b0790c730264e7b3aa5c324c35cb/imagebind_w3D.pth",
+    #             "./ckpts/imagebind_w3D.pth",
+    #             progress=True,
+    #         )
+    #     model.load_state_dict(torch.load("./ckpts/imagebind_w3D.pth"))
+    # return model
     if pretrained:
-        if not os.path.exists("./ckpts/imagebind_w3D.pth"):
+        if not os.path.exists(".checkpoints/imagebind_huge.pth"):
             print(
-                "Downloading the pre-train weight of ImageBind with 3D encoder to ./ckpts/imagebind_w3D.pth ..."
+                "Downloading imagebind weights to .checkpoints/imagebind_huge.pth ..."
             )
-            os.makedirs("./ckpts", exist_ok=True)
+            os.makedirs(".checkpoints", exist_ok=True)
             torch.hub.download_url_to_file(
-                "https://huggingface.co/ZiyuG/ImageBind_w3D/resolve/e9206a10f118b0790c730264e7b3aa5c324c35cb/imagebind_w3D.pth",
-                "./ckpts/imagebind_w3D.pth",
+                "https://dl.fbaipublicfiles.com/imagebind/imagebind_huge.pth",
+                ".checkpoints/imagebind_huge.pth",
                 progress=True,
             )
-        model.load_state_dict(torch.load("./ckpts/imagebind_w3D.pth"))
+
+        model.load_state_dict(torch.load(".checkpoints/imagebind_huge.pth", weights_only=True), strict=False)
+
     return model

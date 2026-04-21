@@ -136,6 +136,6 @@ class SelectEOSAndProject(nn.Module):
         assert x.ndim == 3
         # x is of shape B x L x D
         # take features from the eot embedding (eot_token is the highest number in each sequence)
-        #x = x[torch.arange(x.shape[0]), seq_len]
+        x = x[torch.arange(x.shape[0]), seq_len] # why they commented this out? 
         x = self.proj(x)
         return x
