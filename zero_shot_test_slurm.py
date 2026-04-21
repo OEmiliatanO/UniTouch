@@ -14,6 +14,7 @@ import random
 import sys
 from torch.amp import autocast, GradScaler
 from torch.amp import custom_fwd, custom_bwd
+import torch.optim.lr_scheduler as lr_scheduler
 import wandb
 
 import torch.distributed as dist
@@ -159,7 +160,8 @@ def evaluate(model, dataloader, text_features, device):
 
 def align(touch_model, paired_dataloader, device, epochs=5, local_rank=0, eval_dataloader=None, text_features=None, evaluate_fn=None, logger=None): # infoNCE
     touch_model.train()
-    optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, touch_model.parameters()), lr=1e-4)
+    optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, touch_model.parameters()), lr=1e-5)
+    scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-7)
 
     # scaler = GradScaler()
 
@@ -222,6 +224,8 @@ def align(touch_model, paired_dataloader, device, epochs=5, local_rank=0, eval_d
             tot_uniformity += uniformity_metric.item()
             if is_main_process:
                 logger.log({"step/loss": loss.item(), "step/alignment": alignment_metric.item(), "step/uniformity": uniformity_metric.item()})
+
+        scheduler.step()
 
         avg_loss = torch.tensor(tot_loss / len(paired_dataloader), device=device)
         dist.all_reduce(avg_loss, op=dist.ReduceOp.SUM)
@@ -330,7 +334,7 @@ if __name__ == "__main__":
     if local_rank == 0:
         print("--- Running Post-alignment Training ---")
 
-    model, performance_history = align(model, touch_vision_paired_training_dataloader, device, epochs=10, local_rank=local_rank, 
+    model, performance_history = align(model, touch_vision_paired_training_dataloader, device, epochs=100, local_rank=local_rank, 
                                        eval_dataloader=touch_testing_dataloader, text_features=text_features, evaluate_fn=evaluate, logger=logger if local_rank == 0 else None)
     
     # Step D: 評估 Final Performance
