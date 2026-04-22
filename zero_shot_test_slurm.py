@@ -306,7 +306,29 @@ def align(touch_model, paired_dataloader, device, epochs=5, local_rank=0,
         "mknn": []
     }
 
-    for epoch in range(epochs):
+    epoch_acc = 0
+    if eval_dataloader is not None and text_features is not None and evaluate_fn is not None:
+        epoch_acc = evaluate_fn(touch_model, eval_dataloader, text_features, device)
+        touch_model.train()
+    
+    epoch_imagenet_acc = 0
+    if imagenet_train_loader is not None and imagenet_val_loader is not None:
+        epoch_imagenet_acc = evaluate_on_imagenet(imagenet_train_loader, imagenet_val_loader, touch_model, device)
+        touch_model.train()
+
+    cka, mknn = 0, 0
+    if paired_subdataloader is not None:
+        sim_metrics = evaluate_with_metrics(touch_model, paired_subdataloader, device)
+        cka, mknn = sim_metrics["cka"].item(), sim_metrics["mknn"].item()
+
+    logger.log({"epoch/epoch": 0, "epoch/loss": 0, "epoch/accuracy": epoch_acc, "epoch/imagenet_accuracy": epoch_imagenet_acc, "epoch/cka": cka, "epoch/mknn": mknn})
+    performance_history["loss"].append(0)
+    performance_history["accuracy"].append(epoch_acc)
+    performance_history["imagenet_accuracy"].append(epoch_imagenet_acc)
+    performance_history["cka"].append(cka)
+    performance_history["mknn"].append(mknn)
+
+    for epoch in range(1, epochs+1):
         if hasattr(paired_dataloader.sampler, "set_epoch"):
             paired_dataloader.sampler.set_epoch(epoch)
         
@@ -372,10 +394,8 @@ def align(touch_model, paired_dataloader, device, epochs=5, local_rank=0,
         if imagenet_train_loader is not None and imagenet_val_loader is not None:
             epoch_imagenet_acc = evaluate_on_imagenet(imagenet_train_loader, imagenet_val_loader, touch_model, device)
             touch_model.train()
-            # for param in touch_model.parameters():
-            #     param.requires_grad = True
 
-        cka, mknn = None, None
+        cka, mknn = 0, 0
         if paired_subdataloader is not None:
             sim_metrics = evaluate_with_metrics(touch_model, paired_subdataloader, device)
             cka, mknn = sim_metrics["cka"].item(), sim_metrics["mknn"].item()
@@ -513,17 +533,8 @@ if __name__ == "__main__":
         noise_std=0.002, 
         seed=seed
     ).to(device)
-    
+
     model = DDP(model, device_ids=[local_rank], output_device=local_rank)
-
-    # Step B: 評估 Initial Performance (Zero-shot)
-    if local_rank == 0:
-        print("--- Evaluating Initial Performance ---")
-
-    init_acc = evaluate(model, touch_testing_dataloader, text_features, device)
-    init_imagenet_acc = evaluate_on_imagenet(imagenet_train_loader, imagenet_val_loader, model, device)
-    if local_rank == 0:
-        logger.log({"epoch/accuracy": init_acc, "epoch/imagenet_accuracy": init_imagenet_acc})
 
     dist.barrier(device_ids=[local_rank])
     
