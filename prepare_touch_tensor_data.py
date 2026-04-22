@@ -3,6 +3,7 @@ import random
 import torch
 import ImageBind.data as data
 from ImageBind.models.x2touch_model_part import imagebind_huge, x2touch, ModalityType
+# from ImageBind.models.imagebind_model import imagebind_huge, ModalityType
 import pandas as pd
 from YCB_slide_dataset import YCBSlidePairedDataset, YCBSlideDataset
 import numpy as np
@@ -28,9 +29,10 @@ imagebined_model = imagebind_huge(pretrained=True)
 text_data = data.load_and_transform_text(prompts, device=device)
 with torch.no_grad():
     imagebined_model = imagebined_model.to(device)
-    text_features = imagebined_model({ModalityType.TEXT: text_data})[ModalityType.TEXT]  # Shape: [C, seq_len, 1024]
-    eos_indices = text_data.argmax(dim=-1)
-    text_features = text_features[torch.arange(text_features.shape[0]), eos_indices]
+    text_features = imagebined_model({ModalityType.TEXT: text_data})[ModalityType.TEXT]  # Shape: [C, 1024]
+    # eos_indices = text_data.argmax(dim=-1)
+    # text_features = text_features[torch.arange(text_features.shape[0]), eos_indices]
+    print(text_features.shape)
 text_features = text_features.cpu()
 
 save_dir = "YCB-Slide_dataset_path"
@@ -100,7 +102,7 @@ pd.DataFrame({"path": training_vision_paths, "label": training_label}).to_csv(f"
 pd.DataFrame({"path": testing_vision_paths, "label": testing_label}).to_csv(f"{save_dir}/YCB-Slide_vision_testing_data.csv", index=False)
 
 import ImageBind.data as data
-from ImageBind.models.x2touch_model_part import imagebind_huge, x2touch, ModalityType
+# from ImageBind.models.x2touch_model_part import imagebind_huge, x2touch, ModalityType
 from tqdm import tqdm, trange
 from torchvision import transforms
 
@@ -126,14 +128,14 @@ touch_testing_dataset = YCBSlideDataset(f"{save_dir}/YCB-Slide_touch_testing_dat
 
 touch_vision_paired_training_dataloader = torch.utils.data.DataLoader(
     touch_vision_paired_training_dataset, 
-    batch_size=64, 
+    batch_size=128, 
     num_workers=4, 
     pin_memory=True,
 )
 
 vision_features_list = []
 imagebind_model.to(device)
-for batch in touch_vision_paired_training_dataloader:
+for batch in tqdm(touch_vision_paired_training_dataloader):
     (touch_images, vision_images), labels = batch
     # Process the vision images to extract features
     with torch.no_grad():
