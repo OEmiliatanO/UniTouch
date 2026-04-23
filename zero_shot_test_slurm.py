@@ -155,7 +155,7 @@ def evaluate_on_imagenet(train_loader, val_loader, model, device):
     actual_model = model.module if isinstance(model, DDP) else model
     actual_model.eval()
 
-    epochs = 1
+    epochs = 5
 
     model = LinearProbeModel(num_classes=1000).to(device)
     if dist.is_initialized():
@@ -205,7 +205,7 @@ def evaluate_on_imagenet(train_loader, val_loader, model, device):
         global_train_total = train_metrics[1].item()
         global_train_loss = train_metrics[2].item()
 
-        train_acc = 100. * global_train_correct / global_train_total if global_train_total > 0 else 0
+        train_acc = global_train_correct / global_train_total if global_train_total > 0 else 0
         if is_main_process:
             print(f"Epoch {epoch+1}/{epochs} [Train] Loss: {global_train_loss/global_train_total:.4f}, Accuracy: {train_acc:.2f}%")
         
@@ -236,7 +236,7 @@ def evaluate_on_imagenet(train_loader, val_loader, model, device):
     global_val_correct = val_metrics[0].item()
     global_val_total = val_metrics[1].item()
 
-    val_acc = 100. * global_val_correct / global_val_total if global_val_total > 0 else 0
+    val_acc = global_val_correct / global_val_total if global_val_total > 0 else 0
     
     return val_acc
 
@@ -321,12 +321,13 @@ def align(touch_model, paired_dataloader, device, epochs=5, local_rank=0,
         sim_metrics = evaluate_with_metrics(touch_model, paired_subdataloader, device)
         cka, mknn = sim_metrics["cka"].item(), sim_metrics["mknn"].item()
 
-    logger.log({"epoch/epoch": 0, "epoch/loss": 0, "epoch/accuracy": epoch_acc, "epoch/imagenet_accuracy": epoch_imagenet_acc, "epoch/cka": cka, "epoch/mknn": mknn})
-    performance_history["loss"].append(0)
-    performance_history["accuracy"].append(epoch_acc)
-    performance_history["imagenet_accuracy"].append(epoch_imagenet_acc)
-    performance_history["cka"].append(cka)
-    performance_history["mknn"].append(mknn)
+    if is_main_process:
+        logger.log({"epoch/epoch": 0, "epoch/loss": 0, "epoch/accuracy": epoch_acc, "epoch/imagenet_accuracy": epoch_imagenet_acc, "epoch/cka": cka, "epoch/mknn": mknn})
+        performance_history["loss"].append(0)
+        performance_history["accuracy"].append(epoch_acc)
+        performance_history["imagenet_accuracy"].append(epoch_imagenet_acc)
+        performance_history["cka"].append(cka)
+        performance_history["mknn"].append(mknn)
 
     for epoch in range(1, epochs+1):
         if hasattr(paired_dataloader.sampler, "set_epoch"):
@@ -436,7 +437,7 @@ def prepare_imagenet_dataloader():
         examples['pixel_values'] = [val_transform(image.convert("RGB")) for image in examples['image']]
         return examples
 
-    dataset = load_from_disk("/tmp3/Hans/data/imagenet-1k-hf/")
+    dataset = load_from_disk("/work/hans1010/data/imagenet-1k-hf/")
     train_dataset = dataset['train'].select(range(5000)).with_transform(preprocess_train)
     val_dataset = dataset['validation'].select(range(5000)).with_transform(preprocess_val)
 
@@ -483,10 +484,10 @@ if __name__ == "__main__":
 
     # touch_vision_paired_training_dataset = YCBSlidePairedDataset("YCB-Slide_dataset_path/YCB-Slide_touch_training_data.csv", "YCB-Slide_dataset_path/YCB-Slide_vision_training_data.csv", transform=data_transform)
     touch_vision_paired_training_dataset = YCBSlidedPairedDataset_precomputed_vision("YCB-Slide_dataset_path/YCB-Slide_touch_training_data.csv", "YCB-Slide_dataset_path/precomputed_training_vision_features.pt", transform=data_transform)
-    touch_vision_paired_training_subdataset = torch.utils.data.Subset(touch_vision_paired_training_dataset, indices=range(0, len(touch_vision_paired_training_dataset), 100))
-    touch_vision_paired_training_subdataset_for_metrics = torch.utils.data.Subset(touch_vision_paired_training_dataset, indices=range( 0, min(1000, len(touch_vision_paired_training_dataset)) ))
+    touch_vision_paired_training_subdataset = torch.utils.data.Subset(touch_vision_paired_training_dataset, indices=range(0, len(touch_vision_paired_training_dataset), 1))
+    touch_vision_paired_training_subdataset_for_metrics = torch.utils.data.Subset(touch_vision_paired_training_dataset, indices=range( 0, min(3000, len(touch_vision_paired_training_dataset)) ))
     touch_testing_dataset = YCBSlideDataset("YCB-Slide_dataset_path/YCB-Slide_touch_testing_data.csv", transform=data_transform)
-    touch_testing_subdataset = torch.utils.data.Subset(touch_testing_dataset, indices=range(0, len(touch_testing_dataset), 100))
+    touch_testing_subdataset = torch.utils.data.Subset(touch_testing_dataset, indices=range(0, len(touch_testing_dataset), 1))
 
     # touch_vision_paired_training_dataloader = torch.utils.data.DataLoader(touch_vision_paired_training_subdataset, batch_size=2, shuffle=True, num_workers=4, pin_memory=True)
     # touch_testing_dataloader = torch.utils.data.DataLoader(touch_testing_subdataset, batch_size=64, shuffle=False, num_workers=4, pin_memory=True)
@@ -494,7 +495,7 @@ if __name__ == "__main__":
     train_sampler = DistributedSampler(touch_vision_paired_training_subdataset, drop_last=True)
     touch_vision_paired_training_dataloader = torch.utils.data.DataLoader(
         touch_vision_paired_training_subdataset, 
-        batch_size=10, 
+        batch_size=20, 
         sampler=train_sampler, 
         num_workers=4, 
         pin_memory=True,
@@ -542,12 +543,11 @@ if __name__ == "__main__":
     if local_rank == 0:
         print("--- Running Post-alignment Training ---")
 
-    model, performance_history = align(model, touch_vision_paired_training_dataloader, device, epochs=1, local_rank=local_rank, 
+    model, performance_history = align(model, touch_vision_paired_training_dataloader, device, epochs=10, local_rank=local_rank, 
                                        eval_dataloader=touch_testing_dataloader, text_features=text_features, evaluate_fn=evaluate, 
                                        paired_subdataloader=touch_vision_paired_training_subdataloader_for_metrics, 
                                        imagenet_train_loader=imagenet_train_loader, imagenet_val_loader=imagenet_val_loader, 
                                        logger=logger if local_rank == 0 else None)
-    print(performance_history)
     # Step D: 評估 Final Performance
     if local_rank == 0:
         print("--- Evaluating Final Performance ---")
@@ -556,8 +556,7 @@ if __name__ == "__main__":
     final_imagenet_acc = evaluate_on_imagenet(imagenet_train_loader, imagenet_val_loader, model, device)
 
     if local_rank == 0:
-        results[strategy] = {"Init_Acc": init_acc, "Final_Acc": final_acc, "Final_Imagenet_Acc": final_imagenet_acc, "Performance_History": performance_history}
-        print(f"[{strategy}] Init Acc: {init_acc:.4f} -> Final Acc: {final_acc:.4f}")
+        results[strategy] = {"Final_Acc": final_acc, "Final_Imagenet_Acc": final_imagenet_acc, "Performance_History": performance_history}
         logger.log({"final_accuracy": final_acc, "final_imagenet_accuracy": final_imagenet_acc})
 
     # 再次同步
