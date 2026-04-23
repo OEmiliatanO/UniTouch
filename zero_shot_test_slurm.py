@@ -44,6 +44,33 @@ def set_seed(seed):
     random.seed(seed)
 
 @torch.no_grad()
+def calculate_weight_drift(current_model, initial_weights_dict):
+    drift_metrics = {}
+    total_drift_sq = 0.0
+    total_init_sq = 0.0
+    for name, param in current_model.named_parameters():
+        if name in initial_weights_dict:
+            current_w = param.detach().cpu()
+            initial_w = initial_weights_dict[name]
+            diff_norm = torch.norm(current_w - initial_w, p='fro').item()
+            init_norm = torch.norm(initial_w, p='fro').item()
+            
+            relative_drift_value = diff_norm / (init_norm + 1e-8)
+            relative_log_name = f"relative_layer_drift/{name.replace('.', '/')}"
+            drift_metrics[relative_log_name] = relative_drift_value
+
+            absolute_drift_value = diff_norm
+            absolute_log_name = f"absolute_layer_drift/{name.replace('.', '/')}"
+            drift_metrics[absolute_log_name] = absolute_drift_value
+            
+            total_drift_sq += diff_norm ** 2
+            total_init_sq += init_norm ** 2
+    
+    drift_metrics["absolute_total_drift"] = total_drift_sq ** 0.5
+    drift_metrics["relative_total_drift"] = total_drift_sq ** 0.5 / (total_init_sq ** 0.5 + 1e-8)
+    return drift_metrics
+
+@torch.no_grad()
 def initialize_touch_model(imagebind_model, init_strategy="random", noise_std=0.002, seed=0):
     """
     init_strategy:
@@ -287,7 +314,9 @@ def evaluate_with_metrics(model, paired_dataloader, device):
 
 def align(touch_model, paired_dataloader, device, epochs=5, local_rank=0, 
           eval_dataloader=None, text_features=None, evaluate_fn=None, 
-          paired_subdataloader=None, imagenet_train_loader=None, imagenet_val_loader=None, logger=None
+          paired_subdataloader=None, imagenet_train_loader=None, imagenet_val_loader=None, 
+          initial_weights_cpu=None,
+          logger=None, strategy_name=None, seed=None
          ):
     touch_model.train()
     optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, touch_model.parameters()), lr=1e-5)
@@ -378,7 +407,8 @@ def align(touch_model, paired_dataloader, device, epochs=5, local_rank=0,
             tot_alignment += alignment_metric.item()
             tot_uniformity += uniformity_metric.item()
             if is_main_process:
-                logger.log({"step/loss": loss.item(), "step/alignment": alignment_metric.item(), "step/uniformity": uniformity_metric.item()})
+                drift_metrics = calculate_weight_drift(touch_model.module if isinstance(touch_model, DDP) else touch_model, initial_weights_cpu)
+                logger.log({"step/loss": loss.item(), "step/alignment": alignment_metric.item(), "step/uniformity": uniformity_metric.item()} | drift_metrics)
 
         scheduler.step()
 
@@ -403,6 +433,9 @@ def align(touch_model, paired_dataloader, device, epochs=5, local_rank=0,
 
         if is_main_process:
             print(f"loss: {global_avg_loss}")
+            model_to_save = model.module if isinstance(model, DDP) else model
+            os.makedirs("ckpts", exist_ok=True)
+            torch.save(model_to_save.state_dict(), f"ckpts/touch_model_{strategy_name}_{seed}.pth")
             logger.log({"epoch/epoch": epoch, "epoch/loss": global_avg_loss, "epoch/accuracy": epoch_acc, "epoch/imagenet_accuracy": epoch_imagenet_acc, "epoch/cka": cka, "epoch/mknn": mknn})
             performance_history["loss"].append(global_avg_loss)
             performance_history["accuracy"].append(epoch_acc)
@@ -437,6 +470,7 @@ def prepare_imagenet_dataloader():
         examples['pixel_values'] = [val_transform(image.convert("RGB")) for image in examples['image']]
         return examples
 
+    # dataset = load_from_disk("/tmp3/Hans/data/imagenet-1k-hf/")
     dataset = load_from_disk("/work/hans1010/data/imagenet-1k-hf/")
     train_dataset = dataset['train'].select(range(5000)).with_transform(preprocess_train)
     val_dataset = dataset['validation'].select(range(5000)).with_transform(preprocess_val)
@@ -458,11 +492,11 @@ def prepare_imagenet_dataloader():
 if __name__ == "__main__":
     seed = int(os.environ.get('SLURM_ARRAY_TASK_ID', 0))
     local_rank = setup_ddp()
+    is_main_process = (local_rank == 0)
     device = torch.device(f"cuda:{local_rank}")
 
     imagenet_train_loader, imagenet_val_loader = prepare_imagenet_dataloader()
     
-    # 1. 載入基礎模型與資料 (請替換為實際的 dataset 實例化)
     imagebind_model = imagebind_huge(pretrained=True)
     imagebind_model.eval()
 
@@ -501,7 +535,6 @@ if __name__ == "__main__":
         pin_memory=True,
     )
 
-    # 測試集通常只在 Rank 0 上評估，或者保持原樣讓每張卡跑全部測試集再平均
     test_sampler = DistributedSampler(touch_testing_subdataset, shuffle=False, drop_last=False)
     touch_testing_dataloader = torch.utils.data.DataLoader(
         touch_testing_subdataset, 
@@ -527,7 +560,6 @@ if __name__ == "__main__":
         print(f"\n{'='*20} Testing Strategy: {strategy} {'='*20}")
         logger = wandb.init(project="tactile_zero_shot_test", name=f"strategy_{strategy}_seed_{seed}", reinit=True)
     
-    # Step A: 權重初始化
     model = initialize_touch_model(
         imagebind_model, 
         init_strategy=strategy, 
@@ -536,6 +568,14 @@ if __name__ == "__main__":
     ).to(device)
 
     model = DDP(model, device_ids=[local_rank], output_device=local_rank)
+
+    initial_weights_cpu = {}
+    if is_main_process:
+        initial_weights_cpu = {
+            name: param.detach().cpu().clone() 
+            for name, param in model.module.named_parameters() 
+            if param.requires_grad
+        }
 
     dist.barrier(device_ids=[local_rank])
     
@@ -546,8 +586,9 @@ if __name__ == "__main__":
     model, performance_history = align(model, touch_vision_paired_training_dataloader, device, epochs=10, local_rank=local_rank, 
                                        eval_dataloader=touch_testing_dataloader, text_features=text_features, evaluate_fn=evaluate, 
                                        paired_subdataloader=touch_vision_paired_training_subdataloader_for_metrics, 
-                                       imagenet_train_loader=imagenet_train_loader, imagenet_val_loader=imagenet_val_loader, 
-                                       logger=logger if local_rank == 0 else None)
+                                       imagenet_train_loader=imagenet_train_loader, imagenet_val_loader=imagenet_val_loader,
+                                       initial_weights_cpu = initial_weights_cpu,  
+                                       logger=logger if local_rank == 0 else None, strategy_name=strategy, seed=seed)
     # Step D: 評估 Final Performance
     if local_rank == 0:
         print("--- Evaluating Final Performance ---")
@@ -559,15 +600,12 @@ if __name__ == "__main__":
         results[strategy] = {"Final_Acc": final_acc, "Final_Imagenet_Acc": final_imagenet_acc, "Performance_History": performance_history}
         logger.log({"final_accuracy": final_acc, "final_imagenet_accuracy": final_imagenet_acc})
 
-    # 再次同步
     dist.barrier(device_ids=[local_rank])
 
     if local_rank == 0:
         os.makedirs("results", exist_ok=True)
         with open(f"results/result_{strategy}_{seed}.json", "w") as f:
             json.dump(results, f)
-        model_to_save = model.module if isinstance(model, DDP) else model
-        torch.save(model_to_save.state_dict(), f"results/touch_model_{strategy}_{seed}.pth")
 
     dist.barrier(device_ids=[local_rank])
 
