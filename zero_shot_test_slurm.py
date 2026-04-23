@@ -207,7 +207,7 @@ def evaluate_on_imagenet(train_loader, val_loader, model, device):
 
         train_acc = global_train_correct / global_train_total if global_train_total > 0 else 0
         if is_main_process:
-            print(f"Epoch {epoch+1}/{epochs} [Train] Loss: {global_train_loss/global_train_total:.4f}, Accuracy: {train_acc:.2f}%")
+            print(f"Epoch {epoch+1}/{epochs} [Train] Loss: {global_train_loss/global_train_total:.4f}, Accuracy: {train_acc:.2f}")
         
     # Validation
     model.eval()
@@ -322,7 +322,7 @@ def align(touch_model, paired_dataloader, device, epochs=5, local_rank=0,
         cka, mknn = sim_metrics["cka"].item(), sim_metrics["mknn"].item()
 
     if is_main_process:
-        logger.log({"epoch/epoch": 0, "epoch/loss": 0, "epoch/accuracy": epoch_acc, "epoch/imagenet_accuracy": epoch_imagenet_acc, "epoch/cka": cka, "epoch/mknn": mknn})
+        logger.log({"epoch/epoch": 0, "epoch/accuracy": epoch_acc, "epoch/imagenet_accuracy": epoch_imagenet_acc, "epoch/cka": cka, "epoch/mknn": mknn})
         performance_history["loss"].append(0)
         performance_history["accuracy"].append(epoch_acc)
         performance_history["imagenet_accuracy"].append(epoch_imagenet_acc)
