@@ -70,6 +70,27 @@ def calculate_weight_drift(current_model, initial_weights_dict):
     drift_metrics["relative_total_drift"] = total_drift_sq ** 0.5 / (total_init_sq ** 0.5 + 1e-8)
     return drift_metrics
 
+def prune_unused_modalities(model, keep_modalities):
+    target_attrs = [
+        'modality_preprocessors', 
+        'modality_trunks', 
+        'modality_heads', 
+        'modality_postprocessors'
+    ]
+
+    for attr in target_attrs:
+        if hasattr(model, attr):
+            module_dict = getattr(model, attr)
+            keys_to_remove = [k for k in module_dict.keys() if k not in keep_modalities]
+            for k in keys_to_remove:
+                del module_dict[k]
+    
+    if hasattr(model, 'point_trunk') and ModalityType.POINT not in keep_modalities:
+        del model.point_trunk
+        model.point_trunk = None
+    
+    return model
+
 @torch.no_grad()
 def initialize_touch_model(imagebind_model, init_strategy="random", freeze_vision=True, noise_std=0.002, seed=0):
     """
@@ -134,6 +155,9 @@ def initialize_touch_model(imagebind_model, init_strategy="random", freeze_visio
         for name, param in touchs_vision_component.named_parameters():
             if name in vision_component.state_dict() and vision_params[name].requires_grad:
                 param.requires_grad = not freeze_vision
+
+    keep_mods = [ModalityType.VISION, ModalityType.TOUCH]
+    new_touch_model = prune_unused_modalities(new_touch_model, keep_mods)
 
     imagebind_model.requires_grad_(False)
 
@@ -550,6 +574,8 @@ if __name__ == "__main__":
     
     imagebind_model = imagebind_huge(pretrained=True)
     imagebind_model.eval()
+
+    imagebind_model = prune_unused_modalities(imagebind_model, keep_modalities=[ModalityType.VISION])
 
     data_transform = transforms.Compose(
         [
