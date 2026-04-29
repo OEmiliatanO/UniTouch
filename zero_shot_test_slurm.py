@@ -24,6 +24,10 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
 
 from utils import cka, mknn
+from datetime import datetime
+
+save_dir = datetime.now().strftime("zero_shot_test_%Y%m%d_%H%M%S")
+os.makedirs(save_dir, exist_ok=True)
 
 def setup_ddp():
     """初始化分散式訓練環境"""
@@ -434,8 +438,8 @@ def align(touch_model, paired_dataloader, device, epochs=5, local_rank=0,
         if is_main_process:
             print(f"loss: {global_avg_loss}")
             model_to_save = model.module if isinstance(model, DDP) else model
-            os.makedirs("ckpts", exist_ok=True)
-            torch.save(model_to_save.state_dict(), f"ckpts/touch_model_{strategy_name}_{seed}.pth")
+            os.makedirs(f"{save_dir}/ckpts", exist_ok=True)
+            torch.save(model_to_save.state_dict(), f"{save_dir}/ckpts/touch_model_{strategy_name}_{seed}.pth")
             logger.log({"epoch/epoch": epoch, "epoch/loss": global_avg_loss, "epoch/accuracy": epoch_acc, "epoch/imagenet_accuracy": epoch_imagenet_acc, "epoch/cka": cka, "epoch/mknn": mknn})
             performance_history["loss"].append(global_avg_loss)
             performance_history["accuracy"].append(epoch_acc)
@@ -603,8 +607,8 @@ if __name__ == "__main__":
     dist.barrier(device_ids=[local_rank])
 
     if local_rank == 0:
-        os.makedirs("results", exist_ok=True)
-        with open(f"results/result_{strategy}_{seed}.json", "w") as f:
+        os.makedirs(f"{save_dir}/results", exist_ok=True)
+        with open(f"{save_dir}/results/result_{strategy}_{seed}.json", "w") as f:
             json.dump(results, f)
 
     dist.barrier(device_ids=[local_rank])
