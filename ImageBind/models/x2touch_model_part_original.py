@@ -13,7 +13,7 @@ import torch
 import torch.nn as nn
 from collections import OrderedDict
 
-from .helpers_orginal import (
+from .helpers_original import (
     EinOpsRearrange,
     LearnableLogitScaling,
     Normalize,
