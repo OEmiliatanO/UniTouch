@@ -1,6 +1,7 @@
 fairscale
 sentencepiece
 Pillow
+pandas
 opencv-python
 gradio
 tqdm
@@ -13,3 +14,6 @@ https://github.com/unlimblue/KNN_CUDA/releases/download/0.2/KNN_CUDA-0.2-py3-non
 huggingface_hub
 transformers
 open3d
+wandb
+calibrated-similarity
+datasets
