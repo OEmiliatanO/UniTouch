@@ -654,7 +654,7 @@ def x2touch(pretrained=False):
         checkpoint_path = './last_new.ckpt'
         if checkpoint_path.endswith('.ckpt'):
             print('transferring ckpt to pth')
-            ckpt = torch.load(checkpoint_path)
+            ckpt = torch.load(checkpoint_path, map_location='cpu')
             # print(ckpt.keys())
             # print(ckpt['state_dict'].type())
 
