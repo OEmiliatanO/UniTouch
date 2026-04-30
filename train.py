@@ -681,7 +681,7 @@ def main(args):
     dist.barrier(device_ids=[local_rank])
 
     if local_rank == 0:
-        with open(f"{save_dir}/result_{strategy}_{seed}.json", "w") as f:
+        with open(f"{save_dir}/results.json", "w") as f:
             json.dump(results, f)
 
     dist.barrier(device_ids=[local_rank])
