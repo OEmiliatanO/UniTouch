@@ -573,7 +573,7 @@ def prepare_precomputed_imagenet_dataloader(batch_size=16):
     return dataloader
 
 def main(args):
-    seed = int(os.environ.get('SLURM_ARRAY_TASK_ID', 0))
+    seed = args.seed
     local_rank = setup_ddp()
     is_main_process = (local_rank == 0)
     device = torch.device(f"cuda:{local_rank}")
