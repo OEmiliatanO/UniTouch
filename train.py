@@ -1,5 +1,6 @@
 import glob
-from YCB_slide_dataset import YCBSlidePairedDataset, YCBSlidedPairedDataset_precomputed_vision, YCBSlideDataset
+# from YCB_slide_dataset import YCBSlidePairedDataset, YCBSlidedPairedDataset_precomputed_vision, YCBSlideDataset
+from touch_and_go_dataset import TouchAndGoPairedDataset, TouchAndGoDataset_precomputed_vision, TouchAndGoDataset
 import torch
 import torch.nn.functional as F
 import numpy as np
@@ -192,7 +193,8 @@ def material_classification_evaluate(model, dataloader, text_features, device):
     local_correct = 0
     local_total = 0
     
-    for touch_data, labels in tqdm(dataloader, desc="Evaluating", disable=dist.get_rank() != 0):
+    for batch in tqdm(dataloader, desc="Evaluating", disable=dist.get_rank() != 0):
+        (touch_data, _), labels = batch
         touch_data = touch_data.to(device)
         labels = labels.to(device)
         
@@ -585,13 +587,14 @@ def main(args):
     precomputed_imagenet_loader = prepare_precomputed_imagenet_dataloader(batch_size=args.imagenet_testing_batch_size)
 
     # Prepare tactile dataset and dataloader
-    text_features = torch.load("YCB-Slide_dataset_path/YCB-Slide_text_features.pt").to(device) # Shape: [C, 1024]
+    text_features = torch.load("Touch-and-go_dataset_path/Touch-and-go_text_features.pt").to(device) # Shape: [C, 1024]
 
     if args.freeze_vision:
-        touch_vision_paired_training_dataset = YCBSlidePairedDataset("YCB-Slide_dataset_path/YCB-Slide_touch_training_data.csv", "YCB-Slide_dataset_path/YCB-Slide_vision_training_data.csv", transform=standard_data_transform)
+        touch_vision_paired_training_dataset = TouchAndGoPairedDataset("touch-and-go", transform=standard_data_transform)
     else:
-        touch_vision_paired_training_dataset = YCBSlidedPairedDataset_precomputed_vision("YCB-Slide_dataset_path/YCB-Slide_touch_training_data.csv", "YCB-Slide_dataset_path/precomputed_training_vision_features.pt", transform=standard_data_transform)
-    touch_testing_dataset = YCBSlideDataset("YCB-Slide_dataset_path/YCB-Slide_touch_testing_data.csv", transform=standard_data_transform)
+        touch_vision_paired_training_dataset = TouchAndGoDataset_precomputed_vision("touch-and-go", "touch-and-go/precomputed_training_vision_features.pt", transform=standard_data_transform)
+    # touch_testing_dataset = TouchAndGoDataset("touch-and-go", transform=standard_data_transform)
+    touch_vision_paired_training_dataset, touch_testing_dataset = torch.utils.data.random_split(TouchAndGoDataset("touch-and-go", transform=standard_data_transform), [0.8, 0.2], generator=torch.Generator().manual_seed(seed))
 
     if args.debug:
         touch_vision_paired_training_subdataset = torch.utils.data.Subset(touch_vision_paired_training_dataset, indices=range(0, 1000))
