@@ -316,7 +316,7 @@ def evaluate_on_imagenet(train_loader, val_loader, model, device):
     return val_acc
 
 @torch.no_grad()
-def evaluate_with_metrics(model, paired_dataloader, device):
+def evaluate_with_metrics(model, paired_dataloader, device, args):
     actual_model = model.module if isinstance(model, DDP) else model
     actual_model.eval()
 
@@ -326,14 +326,24 @@ def evaluate_with_metrics(model, paired_dataloader, device):
     is_main_process = (not dist.is_initialized()) or (dist.get_rank() == 0)
 
     for batch in tqdm(paired_dataloader, desc="Extracting Features", disable=not is_main_process):
-        (touch_images, vision_images), _ = batch
-        touch_images = touch_images.to(device)
-        vision_images = vision_images.to(device)
+        if not args.freeze_vision:
+            (touch_images, vision_images), _ = batch
+            touch_images = touch_images.to(device)
+            vision_images = vision_images.to(device)
 
-        outputs = actual_model({ModalityType.TOUCH: touch_images, ModalityType.VISION: vision_images})
+            outputs = actual_model({ModalityType.TOUCH: touch_images, ModalityType.VISION: vision_images})
 
-        touch_outputs = outputs[ModalityType.TOUCH]
-        vision_outputs = outputs[ModalityType.VISION]
+            touch_outputs = outputs[ModalityType.TOUCH]
+            vision_outputs = outputs[ModalityType.VISION]
+        else:
+            (touch_images, vision_features), _ = batch
+            touch_images = touch_images.to(device)
+
+            outputs = actual_model({ModalityType.TOUCH: touch_images})
+
+            touch_outputs = outputs[ModalityType.TOUCH]
+            vision_outputs = vision_features.to(device)
+
 
         local_touch_features.append(touch_outputs)
         local_vision_features.append(vision_outputs)
@@ -394,7 +404,7 @@ def align(touch_model, paired_dataloader, device, epochs=5, local_rank=0,
 
     cka, mknn = 0, 0
     if paired_subdataloader is not None:
-        sim_metrics = evaluate_with_metrics(touch_model, paired_subdataloader, device)
+        sim_metrics = evaluate_with_metrics(touch_model, paired_subdataloader, device, args)
         cka, mknn = sim_metrics["cka"].item(), sim_metrics["mknn"].item()
 
     if is_main_process:
@@ -419,14 +429,26 @@ def align(touch_model, paired_dataloader, device, epochs=5, local_rank=0,
         tot_uniformity = 0
 
         for batch in tqdm(paired_dataloader, disable=not is_main_process, leave=False):
-            (touch_images, vision_images), _ = batch
-            touch_images = touch_images.to(device)
-            vision_images = vision_images.to(device)
-
             optimizer.zero_grad()
-            outputs = touch_model({ModalityType.TOUCH: touch_images, ModalityType.VISION: vision_images})
-            batch_touch_features = outputs[ModalityType.TOUCH]
-            batch_vision_features = outputs[ModalityType.VISION]
+
+            if not args.freeze_vision:
+                (touch_images, vision_images), _ = batch
+                touch_images = touch_images.to(device)
+                vision_images = vision_images.to(device)
+
+                outputs = touch_model({ModalityType.TOUCH: touch_images, ModalityType.VISION: vision_images})
+                
+                batch_vision_features = outputs[ModalityType.VISION]
+                batch_touch_features = outputs[ModalityType.TOUCH]
+            else:
+                (touch_images, vision_features), _ = batch
+                vision_features = vision_features.to(device)
+
+                outputs = touch_model({ModalityType.TOUCH: touch_images})
+
+                batch_vision_features = vision_features
+                batch_touch_features = outputs[ModalityType.TOUCH]
+
             temperature = 0.07
             
             local_touch_features = batch_touch_features
@@ -492,7 +514,7 @@ def align(touch_model, paired_dataloader, device, epochs=5, local_rank=0,
 
         cka, mknn = 0, 0
         if paired_subdataloader is not None:
-            sim_metrics = evaluate_with_metrics(touch_model, paired_subdataloader, device)
+            sim_metrics = evaluate_with_metrics(touch_model, paired_subdataloader, device, args)
             cka, mknn = sim_metrics["cka"].item(), sim_metrics["mknn"].item()
 
         if is_main_process:
@@ -595,7 +617,7 @@ def main(args):
     # Prepare tactile dataset and dataloader
     text_features = torch.load("YCB-Slide_dataset_path/YCB-Slide_text_features.pt").to(device) # Shape: [C, 1024]
 
-    if args.freeze_vision:
+    if not args.freeze_vision:
         touch_vision_paired_training_dataset = YCBSlidePairedDataset("YCB-Slide_dataset_path/YCB-Slide_touch_training_data.csv", "YCB-Slide_dataset_path/YCB-Slide_vision_training_data.csv", transform=standard_data_transform)
     else:
         touch_vision_paired_training_dataset = YCBSlidedPairedDataset_precomputed_vision("YCB-Slide_dataset_path/YCB-Slide_touch_training_data.csv", "YCB-Slide_dataset_path/precomputed_training_vision_features.pt", transform=standard_data_transform)
