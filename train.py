@@ -43,9 +43,6 @@ standard_data_transform = transforms.Compose(
     ]
 )
 
-imagenet_hf_dir = "/tmp3/Hans/data/imagenet-1k-hf/"
-precomputed_imagenet_dir = "/tmp3/Hans/UniTouch/imagenet_with_features/"
-
 def setup_ddp():
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     dist.init_process_group(backend="nccl")
@@ -113,7 +110,7 @@ def initialize_touch_model(init_strategy="random", freeze_vision=True, noise_std
     if init_strategy == "random":
         from ImageBind.models.x2touch_model_part import x2touch
         set_seed(seed)
-        new_touch_model = x2touch(pretrained=False)
+        new_touch_model = x2touch(pretrained=False).cpu()
         new_touch_model.requires_grad_(False)
 
         touch_components = get_components(new_touch_model, ModalityType.TOUCH)
@@ -129,10 +126,9 @@ def initialize_touch_model(init_strategy="random", freeze_vision=True, noise_std
 
     elif init_strategy in ["vision_clean", "vision_noise"]:
         from ImageBind.models.x2touch_model_part import imagebind_huge, x2touch
-        imagebind_model = imagebind_huge(pretrained=True)
+        imagebind_model = imagebind_huge(pretrained=True).cpu()
         imagebind_model = prune_unused_modalities(imagebind_model, keep_modalities=[ModalityType.VISION])
         imagebind_model.eval()
-        imagebind_model.cpu()
         imagebind_model.requires_grad_(True)
 
         g = torch.Generator(device='cpu').manual_seed(seed)
@@ -171,7 +167,7 @@ def initialize_touch_model(init_strategy="random", freeze_vision=True, noise_std
 
     elif init_strategy == "unitouch":
         from ImageBind.models.x2touch_model_part_original import x2touch
-        new_touch_model = x2touch(pretrained=True)
+        new_touch_model = x2touch(pretrained=True).cpu()
 
         touch_components = get_components(new_touch_model, ModalityType.TOUCH)
         touchs_vision_components = get_components(new_touch_model, ModalityType.VISION)
@@ -322,7 +318,7 @@ def evaluate_on_imagenet(train_loader, val_loader, model, device):
     return val_acc
 
 @torch.no_grad()
-def evaluate_with_metrics(model, paired_dataloader, device):
+def evaluate_with_metrics(model, paired_dataloader, device, args):
     actual_model = model.module if isinstance(model, DDP) else model
     actual_model.eval()
 
@@ -332,14 +328,24 @@ def evaluate_with_metrics(model, paired_dataloader, device):
     is_main_process = (not dist.is_initialized()) or (dist.get_rank() == 0)
 
     for batch in tqdm(paired_dataloader, desc="Extracting Features", disable=not is_main_process):
-        (touch_images, vision_images), _ = batch
-        touch_images = touch_images.to(device)
-        vision_images = vision_images.to(device)
+        if not args.freeze_vision:
+            (touch_images, vision_images), _ = batch
+            touch_images = touch_images.to(device)
+            vision_images = vision_images.to(device)
 
-        outputs = actual_model({ModalityType.TOUCH: touch_images, ModalityType.VISION: vision_images})
+            outputs = actual_model({ModalityType.TOUCH: touch_images, ModalityType.VISION: vision_images})
 
-        touch_outputs = outputs[ModalityType.TOUCH]
-        vision_outputs = outputs[ModalityType.VISION]
+            touch_outputs = outputs[ModalityType.TOUCH]
+            vision_outputs = outputs[ModalityType.VISION]
+        else:
+            (touch_images, vision_features), _ = batch
+            touch_images = touch_images.to(device)
+
+            outputs = actual_model({ModalityType.TOUCH: touch_images})
+
+            touch_outputs = outputs[ModalityType.TOUCH]
+            vision_outputs = vision_features.to(device)
+
 
         local_touch_features.append(touch_outputs)
         local_vision_features.append(vision_outputs)
@@ -400,7 +406,7 @@ def align(touch_model, paired_dataloader, device, epochs=5, local_rank=0,
 
     cka, mknn = 0, 0
     if paired_subdataloader is not None:
-        sim_metrics = evaluate_with_metrics(touch_model, paired_subdataloader, device)
+        sim_metrics = evaluate_with_metrics(touch_model, paired_subdataloader, device, args)
         cka, mknn = sim_metrics["cka"].item(), sim_metrics["mknn"].item()
 
     if is_main_process:
@@ -425,14 +431,26 @@ def align(touch_model, paired_dataloader, device, epochs=5, local_rank=0,
         tot_uniformity = 0
 
         for batch in tqdm(paired_dataloader, disable=not is_main_process, leave=False):
-            (touch_images, vision_images), _ = batch
-            touch_images = touch_images.to(device)
-            vision_images = vision_images.to(device)
-
             optimizer.zero_grad()
-            outputs = touch_model({ModalityType.TOUCH: touch_images, ModalityType.VISION: vision_images})
-            batch_touch_features = outputs[ModalityType.TOUCH]
-            batch_vision_features = outputs[ModalityType.VISION]
+
+            if not args.freeze_vision:
+                (touch_images, vision_images), _ = batch
+                touch_images = touch_images.to(device)
+                vision_images = vision_images.to(device)
+
+                outputs = touch_model({ModalityType.TOUCH: touch_images, ModalityType.VISION: vision_images})
+                
+                batch_vision_features = outputs[ModalityType.VISION]
+                batch_touch_features = outputs[ModalityType.TOUCH]
+            else:
+                (touch_images, vision_features), _ = batch
+                vision_features = vision_features.to(device)
+
+                outputs = touch_model({ModalityType.TOUCH: touch_images})
+
+                batch_vision_features = vision_features
+                batch_touch_features = outputs[ModalityType.TOUCH]
+
             temperature = 0.07
             
             local_touch_features = batch_touch_features
@@ -498,16 +516,12 @@ def align(touch_model, paired_dataloader, device, epochs=5, local_rank=0,
 
         cka, mknn = 0, 0
         if paired_subdataloader is not None:
-            sim_metrics = evaluate_with_metrics(touch_model, paired_subdataloader, device)
+            sim_metrics = evaluate_with_metrics(touch_model, paired_subdataloader, device, args)
             cka, mknn = sim_metrics["cka"].item(), sim_metrics["mknn"].item()
 
         if is_main_process:
             print(f"loss: {global_avg_loss:.4f}, accuracy: {epoch_acc:.4f}, imagenet_acc: {epoch_imagenet_acc:.4f}, cka: {cka:.4f}, mknn: {mknn:.4f}")
 
-            model_to_save = model.module if isinstance(model, DDP) else model
-            os.makedirs(f"{save_dir}/ckpts", exist_ok=True)
-            torch.save(model_to_save.state_dict(), f"{save_dir}/ckpts/touch_model.pth")
-            
             logger.log({"epoch/epoch": epoch, "epoch/loss": global_avg_loss, "epoch/accuracy": epoch_acc, "epoch/imagenet_accuracy": epoch_imagenet_acc, "epoch/cka": cka, "epoch/mknn": mknn})
             
             performance_history["loss"].append(global_avg_loss)
@@ -520,9 +534,20 @@ def align(touch_model, paired_dataloader, device, epochs=5, local_rank=0,
             progress_bar.update(1)
 
         dist.barrier(device_ids=[local_rank])
+
+    if is_main_process:
+        model_to_save = touch_model.module if isinstance(touch_model, DDP) else touch_model
+        os.makedirs(f"{save_dir}/ckpts", exist_ok=True)
+        torch.save(model_to_save.state_dict(), f"{save_dir}/ckpts/touch_model.pth")
+
     return touch_model, performance_history
 
-def prepare_imagenet_dataloader(batch_size=16):
+def prepare_imagenet_dataloader(args, batch_size=16):
+    if args.TWCC:
+        imagenet_hf_dir = "/work/hans1010/data/imagenet-1k-hf/"
+    else:
+        imagenet_hf_dir = "/tmp3/Hans/data/imagenet-1k-hf/"
+
     train_transform = transforms.Compose([
         transforms.RandomResizedCrop(224),
         transforms.RandomHorizontalFlip(),
@@ -560,13 +585,18 @@ def prepare_imagenet_dataloader(batch_size=16):
     val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=batch_size, sampler=val_sampler, num_workers=4, collate_fn=collate_fn)
     return train_loader, val_loader
 
-def prepare_precomputed_imagenet_dataloader(batch_size=16):
+def prepare_precomputed_imagenet_dataloader(args, batch_size=16):
     def preprocess_batch(batch):
         batch["image"] = [standard_data_transform(img.convert("RGB")) for img in batch["image"]]
         batch["vision_feature"] = [torch.tensor(feat) for feat in batch["vision_feature"]]
         batch["label"] = [torch.tensor(lbl) for lbl in batch["label"]]
         return batch
     
+    if args.TWCC:
+        precomputed_imagenet_dir = "/work/hans1010/UniTouch/imagenet_with_features/"
+    else:
+        precomputed_imagenet_dir = "/tmp3/Hans/UniTouch/imagenet_with_features/"
+
     dataset = load_from_disk(precomputed_imagenet_dir)
     dataset.set_transform(preprocess_batch)
 
@@ -583,13 +613,13 @@ def main(args):
     save_dir = f"results/{args.exp_name}_{datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}_strategy_{args.strategy}_seed_{seed}_freeze_vision_{args.freeze_vision}_preserve_imagenet_{args.preserver_imagenet_features}"
 
     # Prepare ImageNet dataloaders
-    imagenet_train_loader, imagenet_val_loader = prepare_imagenet_dataloader(batch_size=args.imagenet_testing_batch_size)
-    precomputed_imagenet_loader = prepare_precomputed_imagenet_dataloader(batch_size=args.imagenet_testing_batch_size)
+    imagenet_train_loader, imagenet_val_loader = prepare_imagenet_dataloader(args, batch_size=args.imagenet_testing_batch_size)
+    precomputed_imagenet_loader = prepare_precomputed_imagenet_dataloader(args, batch_size=args.imagenet_testing_batch_size)
 
     # Prepare tactile dataset and dataloader
     text_features = torch.load("Touch-and-go_dataset_path/Touch-and-go_text_features.pt").to(device) # Shape: [C, 1024]
 
-    if args.freeze_vision:
+    if not args.freeze_vision:
         touch_vision_paired_training_dataset = TouchAndGoPairedDataset("touch-and-go", transform=standard_data_transform)
     else:
         touch_vision_paired_training_dataset = TouchAndGoDataset_precomputed_vision("touch-and-go", "touch-and-go/precomputed_training_vision_features.pt", transform=standard_data_transform)
@@ -602,7 +632,7 @@ def main(args):
         touch_testing_subdataset = torch.utils.data.Subset(touch_testing_dataset, indices=range(0, 1000))
     else:
         touch_vision_paired_training_subdataset = touch_vision_paired_training_dataset
-        touch_vision_paired_training_subdataset_for_metrics = touch_vision_paired_training_dataset
+        touch_vision_paired_training_subdataset_for_metrics = torch.utils.data.Subset(touch_vision_paired_training_dataset, indices=range(0, 3000))
         touch_testing_subdataset = touch_testing_dataset
 
     train_sampler = DistributedSampler(touch_vision_paired_training_subdataset, drop_last=True)
@@ -710,10 +740,5 @@ if __name__ == "__main__":
     parser.add_argument("--TWCC", action="store_true", help="Run on TWCC cluster")
 
     args = parser.parse_args()
-
-    if args.TWCC:
-        # modify the global variables for TWCC environment
-        imagenet_hf_dir = "/work/hans1010/data/imagenet-1k-hf/"
-        precomputed_imagenet_dir = "/work/hans1010/UniTouch/imagenet_with_features/"
 
     main(args)
