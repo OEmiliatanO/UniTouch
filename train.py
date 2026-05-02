@@ -189,15 +189,16 @@ def material_classification_evaluate(model, dataloader, text_features, device):
     local_correct = 0
     local_total = 0
     
-    for batch in tqdm(dataloader, desc="Evaluating", disable=dist.get_rank() != 0):
-        (touch_data, _), labels = batch
+    for batch in tqdm(dataloader, desc="Evaluating", disable=dist.get_rank() != 0, leave=False):
+        touch_data, labels = batch
         touch_data = touch_data.to(device)
         labels = labels.to(device)
         
         outputs = actual_model({ModalityType.TOUCH: touch_data}) 
         touch_features = outputs[ModalityType.TOUCH] 
         
-        text_features_norm = text_features
+        text_features_norm = F.normalize(text_features, dim=-1)
+        touch_features = F.normalize(touch_features, dim=-1)
         
         batch_preds = (touch_features @ text_features_norm.T).argmax(dim=-1)
         
@@ -283,8 +284,6 @@ def evaluate_on_imagenet(train_loader, val_loader, model, device):
         global_train_loss = train_metrics[2].item()
 
         train_acc = global_train_correct / global_train_total if global_train_total > 0 else 0
-        if is_main_process:
-            print(f"Epoch {epoch+1}/{epochs} [Train] Loss: {global_train_loss/global_train_total:.4f}, Accuracy: {train_acc:.2f}")
         
     # Validation
     model.eval()
@@ -314,6 +313,10 @@ def evaluate_on_imagenet(train_loader, val_loader, model, device):
     global_val_total = val_metrics[1].item()
 
     val_acc = global_val_correct / global_val_total if global_val_total > 0 else 0
+
+    if is_main_process:
+        print(f" Final ImageNet-1k Training Loss: {global_train_loss/global_train_total:.4f}, Training Accuracy: {train_acc:.4f}")
+        print(f" Final ImageNet-1k Validation Accuracy: {val_acc:.4f} ({global_val_correct}/{global_val_total})")
     
     return val_acc
 
@@ -327,8 +330,8 @@ def evaluate_with_metrics(model, paired_dataloader, device, args):
 
     is_main_process = (not dist.is_initialized()) or (dist.get_rank() == 0)
 
-    for batch in tqdm(paired_dataloader, desc="Extracting Features", disable=not is_main_process):
-        if not args.freeze_vision:
+    for batch in tqdm(paired_dataloader, desc="Extracting Features", disable=not is_main_process, leave=False):
+        if args.vision_inference:
             (touch_images, vision_images), _ = batch
             touch_images = touch_images.to(device)
             vision_images = vision_images.to(device)
@@ -346,6 +349,8 @@ def evaluate_with_metrics(model, paired_dataloader, device, args):
             touch_outputs = outputs[ModalityType.TOUCH]
             vision_outputs = vision_features.to(device)
 
+        touch_outputs = F.normalize(touch_outputs, dim=-1)
+        vision_outputs = F.normalize(vision_outputs, dim=-1)
 
         local_touch_features.append(touch_outputs)
         local_vision_features.append(vision_outputs)
@@ -381,7 +386,7 @@ def align(touch_model, paired_dataloader, device, epochs=5, local_rank=0,
          ):
 
     touch_model.train()
-    optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, touch_model.parameters()), lr=1e-5)
+    optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, touch_model.parameters()), lr=args.lr)
     scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-7)
 
     is_main_process = (local_rank == 0)
@@ -433,7 +438,7 @@ def align(touch_model, paired_dataloader, device, epochs=5, local_rank=0,
         for batch in tqdm(paired_dataloader, disable=not is_main_process, leave=False):
             optimizer.zero_grad()
 
-            if not args.freeze_vision:
+            if args.vision_inference:
                 (touch_images, vision_images), _ = batch
                 touch_images = touch_images.to(device)
                 vision_images = vision_images.to(device)
@@ -453,6 +458,9 @@ def align(touch_model, paired_dataloader, device, epochs=5, local_rank=0,
 
             temperature = 0.07
             
+            batch_vision_features = F.normalize(batch_vision_features, dim=-1)
+            batch_touch_features = F.normalize(batch_touch_features, dim=-1)
+
             local_touch_features = batch_touch_features
             local_vision_features = batch_vision_features
             
@@ -520,7 +528,7 @@ def align(touch_model, paired_dataloader, device, epochs=5, local_rank=0,
             cka, mknn = sim_metrics["cka"].item(), sim_metrics["mknn"].item()
 
         if is_main_process:
-            print(f"loss: {global_avg_loss:.4f}, accuracy: {epoch_acc:.4f}, imagenet_acc: {epoch_imagenet_acc:.4f}, cka: {cka:.4f}, mknn: {mknn:.4f}")
+            print(f" loss: {global_avg_loss:.4f}, accuracy: {epoch_acc:.4f}, imagenet_acc: {epoch_imagenet_acc:.4f}, cka: {cka:.4f}, mknn: {mknn:.4f}")
 
             logger.log({"epoch/epoch": epoch, "epoch/loss": global_avg_loss, "epoch/accuracy": epoch_acc, "epoch/imagenet_accuracy": epoch_imagenet_acc, "epoch/cka": cka, "epoch/mknn": mknn})
             
@@ -617,14 +625,14 @@ def main(args):
     precomputed_imagenet_loader = prepare_precomputed_imagenet_dataloader(args, batch_size=args.imagenet_testing_batch_size)
 
     # Prepare tactile dataset and dataloader
-    text_features = torch.load("Touch-and-go_dataset_path/Touch-and-go_text_features.pt").to(device) # Shape: [C, 1024]
+    text_features = torch.load("touch_and_go/touch_and_go_text_features.pt").to(device) # Shape: [C, 1024]
 
-    if not args.freeze_vision:
-        touch_vision_paired_training_dataset = TouchAndGoPairedDataset("touch-and-go", transform=standard_data_transform)
+    if args.vision_inference:
+        touch_vision_paired_training_dataset = TouchAndGoPairedDataset("touch_and_go", mode="train", transform=standard_data_transform)
     else:
-        touch_vision_paired_training_dataset = TouchAndGoDataset_precomputed_vision("touch-and-go", "touch-and-go/precomputed_training_vision_features.pt", transform=standard_data_transform)
-    # touch_testing_dataset = TouchAndGoDataset("touch-and-go", transform=standard_data_transform)
-    touch_vision_paired_training_dataset, touch_testing_dataset = torch.utils.data.random_split(TouchAndGoDataset("touch-and-go", transform=standard_data_transform), [0.8, 0.2], generator=torch.Generator().manual_seed(seed))
+        touch_vision_paired_training_dataset = TouchAndGoDataset_precomputed_vision("touch_and_go", "touch_and_go/precomputed_training_vision_features.pt", mode="train", transform=standard_data_transform)
+    # touch_testing_dataset = TouchAndGoDataset("touch_and_go", transform=standard_data_transform)
+    touch_testing_dataset = TouchAndGoDataset("touch_and_go", mode="test", transform=standard_data_transform)
 
     if args.debug:
         touch_vision_paired_training_subdataset = torch.utils.data.Subset(touch_vision_paired_training_dataset, indices=range(0, 1000))
@@ -635,7 +643,7 @@ def main(args):
         touch_vision_paired_training_subdataset_for_metrics = torch.utils.data.Subset(touch_vision_paired_training_dataset, indices=range(0, 3000))
         touch_testing_subdataset = touch_testing_dataset
 
-    train_sampler = DistributedSampler(touch_vision_paired_training_subdataset, drop_last=True)
+    train_sampler = DistributedSampler(touch_vision_paired_training_subdataset, shuffle=True, drop_last=True)
     touch_vision_paired_training_dataloader = torch.utils.data.DataLoader(
         touch_vision_paired_training_subdataset, 
         batch_size=args.batch_size, 
@@ -730,11 +738,13 @@ if __name__ == "__main__":
     parser.add_argument("--strategy", type=str, required=True, choices=["random", "vision_clean", "vision_noise", "unitouch"], help="Initialization strategy for the touch model")
     parser.add_argument("--seed", type=int, default=0, help="Random seed for reproducibility")
     parser.add_argument("--freeze_vision", action="store_true", help="Whether to freeze vision components during training")
+    parser.add_argument("--vision_inference", action="store_true", help="Whether to use the vision branch for inference")
     parser.add_argument("--preserver_imagenet_features", action="store_true", help="Whether to use precomputed ImageNet features for an additional loss term")
     parser.add_argument("--exp_name", type=str, default="tactile_zero_shot_test", help="WandB experiment name")
     parser.add_argument("--debug", action="store_true", help="Whether to run in debug mode with fewer epochs and smaller dataset")
     parser.add_argument("--epochs", type=int, default=10, help="Number of epochs for alignment training")
     parser.add_argument("--batch_size", type=int, default=16, help="Batch size for training and evaluation")
+    parser.add_argument("--lr", type=float, default=1e-5, help="Learning rate for alignment training")
     parser.add_argument("--testing_batch_size", type=int, default=32, help="Batch size for testing dataloader")
     parser.add_argument("--imagenet_testing_batch_size", type=int, default=64, help="Batch size for ImageNet testing dataloader")
     parser.add_argument("--TWCC", action="store_true", help="Run on TWCC cluster")

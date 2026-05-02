@@ -10,9 +10,10 @@ import pandas as pd
 
 # only tactile data
 class TouchAndGoDataset(torch.utils.data.Dataset):
-    def __init__(self, dataset_dir, transform=None):
+    def __init__(self, dataset_dir, mode, transform=None):
         self.dataset_dir = dataset_dir
-        self.data = pd.read_csv(f"{dataset_dir}/label.txt", header=None, names=['path', 'label'])
+        self.mode = mode
+        self.data = pd.read_csv(f"{dataset_dir}/{mode}.txt", header=None, names=['path', 'label'])
         self.transform = transform
 
     def __len__(self):
@@ -29,9 +30,10 @@ class TouchAndGoDataset(torch.utils.data.Dataset):
         return image, label
 
 class TouchAndGoPairedDataset(torch.utils.data.Dataset):
-    def __init__(self, dataset_dir, transform=None):
+    def __init__(self, dataset_dir, mode, transform=None):
         self.dataset_dir = dataset_dir
-        self.data = pd.read_csv(f"{dataset_dir}/label.txt", header=None, names=['path', 'label'])
+        self.mode = mode
+        self.data = pd.read_csv(f"{dataset_dir}/{mode}.txt", header=None, names=['path', 'label'])
         self.transform = transform
 
     def __len__(self):
@@ -53,9 +55,10 @@ class TouchAndGoPairedDataset(torch.utils.data.Dataset):
         return (touch_image, vision_image), label
 
 class TouchAndGoDataset_precomputed_vision(torch.utils.data.Dataset):
-    def __init__(self, dataset_dir, precomputed_vision_features_loc, transform=None):
+    def __init__(self, dataset_dir, precomputed_vision_features_loc, mode, transform=None):
         self.dataset_dir = dataset_dir
-        self.data = pd.read_csv(f"{dataset_dir}/label.txt", header=None, names=['path', 'label'])
+        self.mode = mode
+        self.data = pd.read_csv(f"{dataset_dir}/{mode}.txt", header=None, names=['path', 'label'])
         self.vision_data = torch.load(precomputed_vision_features_loc, map_location=torch.device("cpu"))
         self.transform = transform
     
@@ -70,7 +73,7 @@ class TouchAndGoDataset_precomputed_vision(torch.utils.data.Dataset):
             touch_image = Image.open(fopen).convert("RGB")
         if self.transform:
             touch_image = self.transform(touch_image)
-        return (touch_image, self.vision_data[idx]), label
+        return (touch_image, self.vision_data[touch_instance_path]), label
 
 """
 data_transform = transforms.Compose(
