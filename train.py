@@ -619,7 +619,10 @@ def main(args):
     precomputed_imagenet_loader = prepare_precomputed_imagenet_dataloader(args, batch_size=args.imagenet_testing_batch_size)
 
     # Prepare tactile dataset and dataloader
-    text_features = torch.load("touch_and_go/touch_and_go_text_features.pt").to(device) # Shape: [C, 1024]
+    if args.dataset == "ycb_slide":
+        text_features = torch.load("YCB-Slide_dataset_path/YCB-Slide_text_features.pt").to(device) # Shape: [C, 1024]
+    elif args.dataset == "touch_and_go":
+        text_features = torch.load("touch_and_go/touch_and_go_text_features.pt").to(device) # Shape: [C, 1024]
 
     if args.vision_inference:
         if args.dataset == "ycb_slide":
@@ -677,7 +680,7 @@ def main(args):
 
     if local_rank == 0:
         print(f"\n{'='*20} Testing Strategy: {strategy} {'='*20}")
-        logger = wandb.init(project="tactile_zero_shot_test", name=f"{args.exp_name}_strategy_{args.strategy}_seed_{seed}", reinit=True)
+        logger = wandb.init(project="tactile_zero_shot_test", name=f"{args.exp_name}_strategy_{args.strategy}_dataset_{args.dataset}_seed_{seed}_freeze_vision_{args.freeze_vision}_preserve_imagenet_{args.preserver_imagenet_features}", reinit="finish_previous")
     
     model = initialize_touch_model(
         init_strategy=strategy, 
