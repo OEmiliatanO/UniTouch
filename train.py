@@ -1,5 +1,5 @@
 import glob
-# from YCB_slide_dataset import YCBSlidePairedDataset, YCBSlidedPairedDataset_precomputed_vision, YCBSlideDataset
+from YCB_slide_dataset import YCBSlidePairedDataset, YCBSlidedPairedDataset_precomputed_vision, YCBSlideDataset
 from touch_and_go_dataset import TouchAndGoPairedDataset, TouchAndGoDataset_precomputed_vision, TouchAndGoDataset
 import torch
 import torch.nn.functional as F
@@ -551,10 +551,7 @@ def align(touch_model, paired_dataloader, device, epochs=5, local_rank=0,
     return touch_model, performance_history
 
 def prepare_imagenet_dataloader(args, batch_size=16):
-    if args.TWCC:
-        imagenet_hf_dir = "/work/hans1010/data/imagenet-1k-hf/"
-    else:
-        imagenet_hf_dir = "/tmp3/Hans/data/imagenet-1k-hf/"
+    imagenet_hf_dir = "imagenet-1k-hf"
 
     train_transform = transforms.Compose([
         transforms.RandomResizedCrop(224),
@@ -600,10 +597,7 @@ def prepare_precomputed_imagenet_dataloader(args, batch_size=16):
         batch["label"] = [torch.tensor(lbl) for lbl in batch["label"]]
         return batch
     
-    if args.TWCC:
-        precomputed_imagenet_dir = "/work/hans1010/UniTouch/imagenet_with_features/"
-    else:
-        precomputed_imagenet_dir = "/tmp3/Hans/UniTouch/imagenet_with_features/"
+    precomputed_imagenet_dir = "imagenet_with_features"
 
     dataset = load_from_disk(precomputed_imagenet_dir)
     dataset.set_transform(preprocess_batch)
@@ -628,11 +622,19 @@ def main(args):
     text_features = torch.load("touch_and_go/touch_and_go_text_features.pt").to(device) # Shape: [C, 1024]
 
     if args.vision_inference:
-        touch_vision_paired_training_dataset = TouchAndGoPairedDataset("touch_and_go", mode="train", transform=standard_data_transform)
+        if args.dataset == "ycb_slide":
+            touch_vision_paired_training_dataset = YCBSlidePairedDataset("YCB-Slide_dataset_path/YCB-Slide_touch_training_data.csv", "YCB-Slide_dataset_path/YCB-Slide_vision_training_data.csv", transform=standard_data_transform)
+        elif args.dataset == "touch_and_go":
+            touch_vision_paired_training_dataset = TouchAndGoPairedDataset("touch_and_go", mode="train", transform=standard_data_transform)
     else:
-        touch_vision_paired_training_dataset = TouchAndGoDataset_precomputed_vision("touch_and_go", "touch_and_go/precomputed_training_vision_features.pt", mode="train", transform=standard_data_transform)
-    # touch_testing_dataset = TouchAndGoDataset("touch_and_go", transform=standard_data_transform)
-    touch_testing_dataset = TouchAndGoDataset("touch_and_go", mode="test", transform=standard_data_transform)
+        if args.dataset == "ycb_slide":
+            touch_vision_paired_training_dataset = YCBSlidedPairedDataset_precomputed_vision("YCB-Slide_dataset_path/YCB-Slide_touch_training_data.csv", "YCB-Slide_dataset_path/precomputed_training_vision_features.pt", transform=standard_data_transform)
+        elif args.dataset == "touch_and_go":
+            touch_vision_paired_training_dataset = TouchAndGoDataset_precomputed_vision("touch_and_go", "touch_and_go/precomputed_training_vision_features.pt", mode="train", transform=standard_data_transform)
+    if args.dataset == "ycb_slide":
+        touch_testing_dataset = YCBSlideDataset("YCB-Slide_dataset_path/YCB-Slide_touch_testing_data.csv", transform=standard_data_transform)
+    elif args.dataset == "touch_and_go":
+        touch_testing_dataset = TouchAndGoDataset("touch_and_go", mode="test", transform=standard_data_transform)
 
     if args.debug:
         touch_vision_paired_training_subdataset = torch.utils.data.Subset(touch_vision_paired_training_dataset, indices=range(0, 1000))
@@ -747,7 +749,7 @@ if __name__ == "__main__":
     parser.add_argument("--lr", type=float, default=1e-5, help="Learning rate for alignment training")
     parser.add_argument("--testing_batch_size", type=int, default=32, help="Batch size for testing dataloader")
     parser.add_argument("--imagenet_testing_batch_size", type=int, default=64, help="Batch size for ImageNet testing dataloader")
-    parser.add_argument("--TWCC", action="store_true", help="Run on TWCC cluster")
+    parser.add_argument("--dataset", type=str, default="touch_and_go", choices=["touch_and_go", "ycb_slide"], help="Which tactile dataset to use for training and evaluation")
 
     args = parser.parse_args()
 
