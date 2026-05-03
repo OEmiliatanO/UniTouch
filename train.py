@@ -612,7 +612,7 @@ def main(args):
     is_main_process = (local_rank == 0)
     device = torch.device(f"cuda:{local_rank}")
 
-    save_dir = f"results/{args.exp_name}_{datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}_strategy_{args.strategy}_seed_{seed}_freeze_vision_{args.freeze_vision}_preserve_imagenet_{args.preserver_imagenet_features}"
+    save_dir = f"results/{args.exp_name}_{datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}_strategy_{args.strategy}_dataset_{args.dataset}_seed_{seed}_freeze_vision_{args.freeze_vision}_preserve_imagenet_{args.preserver_imagenet_features}"
 
     # Prepare ImageNet dataloaders
     imagenet_train_loader, imagenet_val_loader = prepare_imagenet_dataloader(args, batch_size=args.imagenet_testing_batch_size)
