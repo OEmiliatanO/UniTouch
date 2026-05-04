@@ -680,7 +680,10 @@ def main(args):
 
     if local_rank == 0:
         print(f"\n{'='*20} Testing Strategy: {strategy} {'='*20}")
-        logger = wandb.init(project="tactile_zero_shot_test", name=f"{args.exp_name}_strategy_{args.strategy}_dataset_{args.dataset}_seed_{seed}_freeze_vision_{args.freeze_vision}_preserve_imagenet_{args.preserver_imagenet_features}", reinit="finish_previous")
+        logger = wandb.init(project="tactile_zero_shot_test", 
+            name=f"{args.exp_name}_strategy_{args.strategy}_dataset_{args.dataset}_seed_{seed}_freeze_vision_{args.freeze_vision}_preserve_imagenet_{args.preserver_imagenet_features}", 
+            config=vars(args),
+            reinit="finish_previous")
     
     model = initialize_touch_model(
         init_strategy=strategy, 
