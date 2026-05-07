@@ -154,6 +154,15 @@ def initialize_touch_model(init_strategy="random", freeze_vision=True, noise_std
                         param.data.copy_(base_weight + noise)
                     elif init_strategy == "vision_clean":
                         param.data.copy_(base_weight)
+                    elif init_strategy == "vision_shuffle":
+                        base_weight_flat = base_weight.view(-1)
+                        idx = torch.randperm(base_weight_flat.size(0), generator=g)
+                        base_weight_shuffled = base_weight_flat[idx].view_as(base_weight)
+                        param.data.copy_(base_weight_shuffled)
+                    elif init_strategy == "vision_random":
+                        mean = base_weight.mean().item()
+                        std = base_weight.std().item()
+                        param.data.normal_(mean=mean, std=std, generator=g)
                 
                     param.requires_grad = True
             for name, param in touchs_vision_component.named_parameters():
@@ -164,7 +173,6 @@ def initialize_touch_model(init_strategy="random", freeze_vision=True, noise_std
         new_touch_model = prune_unused_modalities(new_touch_model, keep_mods)
 
         return new_touch_model
-
     elif init_strategy == "unitouch":
         from ImageBind.models.x2touch_model_part_original import x2touch
         new_touch_model = x2touch(pretrained=True).cpu()
