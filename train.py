@@ -124,7 +124,7 @@ def initialize_touch_model(init_strategy="random", freeze_vision=True, noise_std
 
         return new_touch_model
 
-    elif init_strategy in ["vision_clean", "vision_noise"]:
+    elif init_strategy in ["vision_clean", "vision_noise", "vision_shuffle", "vision_random"]:
         from ImageBind.models.x2touch_model_part import imagebind_huge, x2touch
         imagebind_model = imagebind_huge(pretrained=True).cpu()
         imagebind_model = prune_unused_modalities(imagebind_model, keep_modalities=[ModalityType.VISION])
@@ -751,7 +751,7 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train Touch Model with Different Initialization Strategies")
-    parser.add_argument("--strategy", type=str, required=True, choices=["random", "vision_clean", "vision_noise", "unitouch"], help="Initialization strategy for the touch model")
+    parser.add_argument("--strategy", type=str, required=True, choices=["random", "vision_clean", "vision_noise", "unitouch", "vision_shuffle", "vision_random"], help="Initialization strategy for the touch model")
     parser.add_argument("--seed", type=int, default=0, help="Random seed for reproducibility")
     parser.add_argument("--freeze_vision", action="store_true", help="Whether to freeze vision components during training")
     parser.add_argument("--vision_inference", action="store_true", help="Whether to use the vision branch for inference")
